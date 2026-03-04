@@ -1,25 +1,23 @@
 const express = require('express');
-const mongoose = require('mongoose');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const path = require('path');
+const { query } = require('./db');
 
 dotenv.config();
 
 const app = express();
 
 // Middleware
-app.use(cors());
+const allowedOrigins = process.env.FRONTEND_URL
+  ? process.env.FRONTEND_URL.split(',').map((s) => s.trim()).filter(Boolean)
+  : null;
+
+app.use(cors({
+  origin: allowedOrigins || true,
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// Database connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/invoiceportal', {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-.then(() => console.log('MongoDB connected successfully'))
-.catch((err) => console.error('MongoDB connection error:', err));
 
 // Routes
 const authRoutes = require('./routes/auth');
@@ -31,8 +29,13 @@ app.use('/api/invoices', invoiceRoutes);
 app.use('/api/users', userRoutes);
 
 // Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'Server is running' });
+app.get('/api/health', async (req, res) => {
+  try {
+    await query('SELECT 1 AS ok');
+    res.json({ status: 'ok', message: 'Server is running', db: 'ok' });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: 'Database connection failed', error: error.message });
+  }
 });
 
 // Serve static files in production

@@ -15,7 +15,7 @@ A full-stack web application for managing invoices with user authentication, inv
 ### Backend
 - Node.js
 - Express.js
-- MongoDB with Mongoose
+- MariaDB (via mysql2)
 - JWT for authentication
 - bcryptjs for password hashing
 
@@ -29,7 +29,7 @@ A full-stack web application for managing invoices with user authentication, inv
 
 ### Prerequisites
 - Node.js (v14 or higher)
-- MongoDB (local or Atlas)
+- MariaDB
 - npm or yarn
 
 ### Backend Setup
@@ -50,6 +50,10 @@ cp ../.env.example .env
 ```
 
 4. Update the `.env` file with your configuration
+   - `DATABASE_URL` (required), e.g. `mysql://user:password@localhost:3306/invoiceportal`
+   - `JWT_SECRET` (required)
+   - `DEFAULT_TENANT_KEY` (optional; defaults to `default`)
+   - For multi-tenant setups you can also send `X-Tenant-Key` on auth requests
 
 5. Start the backend server:
 ```bash
