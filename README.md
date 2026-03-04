@@ -2,6 +2,10 @@
 
 A full-stack web application for managing invoices with user authentication, invoice creation, and tracking.
 
+Important: Backend and frontend are maintained in separate repositories (do not commit backend/frontend changes to this legacy combined repo):
+- Backend: https://github.com/peeter-afs/invoiceportal-backend
+- Frontend: https://github.com/peeter-afs/invoiceportal-frontend
+
 ## Features
 
 - User authentication (Register/Login)
