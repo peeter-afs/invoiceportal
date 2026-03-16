@@ -10,118 +10,184 @@ function getClient() {
   return client;
 }
 
-const EXTRACTION_PROMPT = `You are an invoice extraction system. Extract all data from this invoice text and return it as a JSON object.
+// ── Strict JSON Schema for OpenAI Structured Outputs ──
+// This forces the model to return exactly these fields with correct types.
+// `strict: true` guarantees schema conformance — no extra fields, no wrong types.
+const INVOICE_SCHEMA = {
+  name: 'invoice_extraction',
+  strict: true,
+  schema: {
+    type: 'object',
+    properties: {
+      supplierName: { type: ['string', 'null'] },
+      supplierAddress: { type: ['string', 'null'] },
+      supplierRegNumber: { type: ['string', 'null'] },
+      supplierVatNumber: { type: ['string', 'null'] },
+      supplierBankAccount: { type: ['string', 'null'] },
+      invoiceNumber: { type: ['string', 'null'] },
+      invoiceDate: { type: ['string', 'null'], description: 'YYYY-MM-DD format' },
+      dueDate: { type: ['string', 'null'], description: 'YYYY-MM-DD format' },
+      currency: { type: ['string', 'null'], description: 'ISO 4217 code, e.g. EUR' },
+      purchaseOrderNr: { type: ['string', 'null'] },
+      referenceNumber: { type: ['string', 'null'] },
+      penaltyRate: { type: ['string', 'null'] },
+      paymentTerms: { type: ['string', 'null'] },
+      deliveryDate: { type: ['string', 'null'], description: 'YYYY-MM-DD format' },
+      deliveryMethod: { type: ['string', 'null'] },
+      deliveryNoteNr: { type: ['string', 'null'] },
+      buyerReference: { type: ['string', 'null'] },
+      sellerReference: { type: ['string', 'null'] },
+      lines: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            rowNo: { type: 'number' },
+            productCode: { type: ['string', 'null'] },
+            description: { type: ['string', 'null'] },
+            qty: { type: ['number', 'null'] },
+            unit: { type: ['string', 'null'] },
+            unitPrice: { type: ['number', 'null'] },
+            net: { type: ['number', 'null'] },
+            vatRate: { type: ['number', 'null'] },
+            vatAmount: { type: ['number', 'null'] },
+            gross: { type: ['number', 'null'] },
+          },
+          required: ['rowNo', 'productCode', 'description', 'qty', 'unit', 'unitPrice', 'net', 'vatRate', 'vatAmount', 'gross'],
+          additionalProperties: false,
+        },
+      },
+      netTotal: { type: ['number', 'null'] },
+      vatTotal: { type: ['number', 'null'] },
+      grossTotal: { type: ['number', 'null'] },
+      confidence: { type: 'number', description: '0 to 1' },
+    },
+    required: [
+      'supplierName', 'supplierAddress', 'supplierRegNumber', 'supplierVatNumber',
+      'supplierBankAccount', 'invoiceNumber', 'invoiceDate', 'dueDate', 'currency',
+      'purchaseOrderNr', 'referenceNumber', 'penaltyRate', 'paymentTerms',
+      'deliveryDate', 'deliveryMethod', 'deliveryNoteNr', 'buyerReference',
+      'sellerReference', 'lines', 'netTotal', 'vatTotal', 'grossTotal', 'confidence',
+    ],
+    additionalProperties: false,
+  },
+};
 
-Invoices may be in Estonian, Finnish, English, or other languages. Use these field mappings:
+// ── Extraction Prompt ──
+const EXTRACTION_PROMPT = `You are an invoice data extraction system. Extract all fields from the invoice text below.
 
-ESTONIAN → ENGLISH FIELD MAPPING:
-  Müüja / Hankija → supplierName (seller/vendor)
-  Arve nr / Arve number → invoiceNumber
+LANGUAGE SUPPORT — invoices may be in Estonian, Finnish, English, or other languages.
+
+ESTONIAN FIELD MAPPINGS:
+  Müüja / Hankija → supplierName
+  Reg nr / Registrikood → supplierRegNumber
+  KMKR nr → supplierVatNumber
+  Pangakonto / IBAN → supplierBankAccount
+  Arve nr → invoiceNumber
   Kuupäev / Arve kuupäev → invoiceDate
-  Makseviis / Makseaeg → paymentTerms (payment method/terms)
-  Tähtaeg / Maksetähtaeg → dueDate (due date)
-  Viivis %p. → penaltyRate (late penalty percentage)
-  Viitenumber / Viitenr → referenceNumber (payment reference number)
-  Tarnepäev / Lähetuskuupäev → deliveryDate
+  Tähtaeg / Maksetähtaeg → dueDate
+  Makseviis / Makseaeg → paymentTerms
+  Viivis %p. → penaltyRate
+  Viitenumber → referenceNumber
+  Tarnepäev → deliveryDate
   Tarneviis → deliveryMethod
-  Meie viide → buyerReference (our reference)
-  Teie viide → sellerReference (your reference)
-  Saatelehe nr → deliveryNoteNr (waybill/delivery note number)
+  Meie viide → buyerReference
+  Teie viide → sellerReference
+  Saatelehe nr → deliveryNoteNr
   Tootekood / Kood → productCode
-  Tootenimi / Nimetus / Kauba nimetus → description (product name)
-  Hind km-ta / Ühiku hind → unitPrice (price without VAT)
-  Tk / Kogus / Kgk → qty (quantity)
+  Tootenimi / Nimetus → description
+  Hind km-ta → unitPrice (price WITHOUT VAT per unit)
+  Tk / Kogus / Kgk → qty (QUANTITY — this is ALWAYS a count/amount)
   Ühik → unit
-  Kokku / Summa → net (line total)
-  Kokku käibemaksuta / Summa km-ta → netTotal (total without VAT)
-  Käibemaks / Km / KM → vatTotal (VAT amount)
-  Kokku / Kokku tasuda / Arve summa → grossTotal (total to pay)
-  Km % / Käibemaks % → vatRate
-  Reg nr / Registrikood → supplierRegNumber (registration number)
-  KMKR nr / Käibemaksukohustuslase nr → supplierVatNumber (VAT number)
-  Pangakonto / Arveldusarve / IBAN → supplierBankAccount
-  Tellimuse nr / Ostutellimus → purchaseOrderNr
+  Kokku (in line) → net (line total without VAT)
+  Kokku käibemaksuta → netTotal
+  Km / KM → vatTotal (VAT amount)
+  Km % → vatRate
+  Kokku / Kokku tasuda → grossTotal
+  Tellimuse nr → purchaseOrderNr
 
-FINNISH → ENGLISH FIELD MAPPING:
+FINNISH FIELD MAPPINGS:
   Myyjä / Toimittaja → supplierName
   Laskun numero → invoiceNumber
   Laskun päivä → invoiceDate
   Eräpäivä → dueDate
-  Viite / Viitenumero → referenceNumber
+  Viite → referenceNumber
   Tuotekoodi → productCode
-  Tuotenimi / Kuvaus → description
+  Tuotenimi → description
   Yksikköhinta → unitPrice
   Määrä → qty
   Yhteensä ilman ALV → netTotal
   ALV → vatTotal
   Yhteensä → grossTotal
 
-Return ONLY valid JSON, no markdown, no explanation. Use this exact structure:
-{
-  "supplierName": "string or null",
-  "supplierAddress": "string or null",
-  "supplierRegNumber": "string or null",
-  "supplierVatNumber": "string or null",
-  "supplierBankAccount": "string or null",
-  "invoiceNumber": "string or null",
-  "invoiceDate": "YYYY-MM-DD or null",
-  "dueDate": "YYYY-MM-DD or null",
-  "currency": "ISO 4217 3-letter code e.g. EUR or null",
-  "purchaseOrderNr": "string or null",
-  "referenceNumber": "string or null",
-  "penaltyRate": "string or null",
-  "paymentTerms": "string or null",
-  "deliveryDate": "YYYY-MM-DD or null",
-  "deliveryMethod": "string or null",
-  "deliveryNoteNr": "string or null",
-  "buyerReference": "string or null",
-  "sellerReference": "string or null",
-  "lines": [
-    {
-      "rowNo": 1,
-      "productCode": "string or null",
-      "description": "string",
-      "qty": number or null,
-      "unit": "string or null",
-      "unitPrice": number or null,
-      "net": number or null,
-      "vatRate": number or null,
-      "vatAmount": number or null,
-      "gross": number or null
-    }
-  ],
-  "netTotal": number or null,
-  "vatTotal": number or null,
-  "grossTotal": number or null,
-  "confidence": number between 0 and 1
-}
+CRITICAL NUMBER FORMAT RULES:
+- European invoices use COMMA as decimal separator: "120,00" means 120.00, NOT 12000
+- "240,00 €" = 240.00 in JSON
+- "52,80 €" = 52.80 in JSON
+- "1 234,56" = 1234.56 (space is thousands separator, comma is decimal)
+- ALWAYS return numbers with DOT decimal in JSON (never comma)
+- Strip currency symbols (€, $) — return pure numbers
 
-Rules:
-- confidence = 1.0 if all key fields found, lower if missing important fields
-- Use numbers for amounts, not strings
-- dates must be YYYY-MM-DD or null
-- vatRate as percentage (e.g. 24 for 24%)
-- If a field is not present in the invoice, use null
-- "Arve tasumisel kasutage viitenumbrit" means "Use reference number when paying the invoice" — extract the reference number from nearby text
-- Currency is almost always EUR for Estonian/Finnish invoices if not explicitly stated
-- Estonian dates may be in DD.MM.YYYY format — convert to YYYY-MM-DD`;
+MATH CROSS-CHECKS — verify before returning:
+- Each line: qty × unitPrice should equal net (e.g. 2 × 120.00 = 240.00)
+- Sum of all line net values should equal netTotal
+- netTotal + vatTotal should equal grossTotal
+- vatAmount for a line = net × (vatRate / 100)
 
-async function extract(invoiceText, filename) {
+DATE FORMAT:
+- Estonian/Finnish dates are DD.MM.YYYY → convert to YYYY-MM-DD
+- "04.04.2025" → "2025-04-04"
+
+OTHER RULES:
+- confidence = 1.0 if all key fields extracted and math checks pass
+- If currency not stated but € symbol present, use "EUR"
+- "Arve tasumisel kasutage viitenumbrit" = "Use reference number when paying"
+- vatRate as percentage number (e.g. 22 for 22%)
+- If a field is not present, return null`;
+
+/**
+ * Primary extraction: call OpenAI with structured output schema.
+ * @param {string} invoiceText - extracted PDF text
+ * @param {string} filename - original filename for context
+ * @param {object} [options] - optional: { previousErrors } for retry
+ */
+async function extract(invoiceText, filename, options = {}) {
   const openai = getClient();
-
   const model = process.env.OPENAI_MODEL || 'gpt-4o';
+
+  const messages = [
+    { role: 'system', content: EXTRACTION_PROMPT },
+  ];
+
+  // On retry, include the previous errors so the model can self-correct
+  if (options.previousErrors && options.previousErrors.length > 0) {
+    messages.push({
+      role: 'user',
+      content: `Invoice filename: ${filename}\n\n--- INVOICE TEXT ---\n${invoiceText}`,
+    });
+    messages.push({
+      role: 'assistant',
+      content: options.previousResponse || '(previous extraction had errors)',
+    });
+    messages.push({
+      role: 'user',
+      content: `Your previous extraction had these errors:\n${options.previousErrors.map(e => `- ${e}`).join('\n')}\n\nPlease re-extract the invoice carefully. Pay special attention to:\n- European number format: comma (,) is decimal separator, NOT thousands\n- "Tk" column = quantity\n- Verify: qty × unitPrice = net for each line\n- Verify: netTotal + vatTotal = grossTotal`,
+    });
+  } else {
+    messages.push({
+      role: 'user',
+      content: `Invoice filename: ${filename}\n\n--- INVOICE TEXT ---\n${invoiceText}`,
+    });
+  }
 
   const completion = await openai.chat.completions.create({
     model,
-    messages: [
-      { role: 'system', content: EXTRACTION_PROMPT },
-      {
-        role: 'user',
-        content: `Invoice filename: ${filename}\n\n--- INVOICE TEXT ---\n${invoiceText}`,
-      },
-    ],
+    messages,
     temperature: 0,
-    response_format: { type: 'json_object' },
+    response_format: {
+      type: 'json_schema',
+      json_schema: INVOICE_SCHEMA,
+    },
   });
 
   const rawJson = completion.choices[0].message.content;

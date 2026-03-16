@@ -32,5 +32,8 @@ logs/
 *.swo
 *~
 
+# Uploaded files
+backend/uploads/
+
 # OS
 Thumbs.db

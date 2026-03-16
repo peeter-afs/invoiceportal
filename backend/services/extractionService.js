@@ -6,6 +6,7 @@ const costpocketExtractor = require('./costpocketExtractor');
 const { validate } = require('./validationService');
 
 const MIN_CONFIDENCE = 0.6; // below this, try CostPocket fallback
+const TOLERANCE = 0.02; // 2 cent tolerance for rounding
 
 async function addLog(invoiceId, step, level, message, payload) {
   try {
@@ -35,6 +36,111 @@ async function updateInvoiceStatus(invoiceId, status, errorMessage) {
   } else {
     await query('UPDATE invoices SET status = ? WHERE id = ?', [status, invoiceId]);
   }
+}
+
+// ── Math Auto-Correction ──
+// Detects and fixes common extraction errors (factor-of-10 mistakes, missing calculations)
+
+function approxEqual(a, b) {
+  if (a == null || b == null) return true;
+  return Math.abs(Number(a) - Number(b)) <= TOLERANCE;
+}
+
+function correctExtractedMath(extracted) {
+  const corrections = [];
+  const lines = extracted.lines || [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const qty = line.qty != null ? Number(line.qty) : null;
+    const unitPrice = line.unitPrice != null ? Number(line.unitPrice) : null;
+    const net = line.net != null ? Number(line.net) : null;
+
+    if (qty != null && unitPrice != null && net != null) {
+      const expected = qty * unitPrice;
+      if (!approxEqual(expected, net)) {
+        // Check if net is off by a factor of 10 or 100 (European decimal confusion)
+        for (const factor of [10, 100]) {
+          if (approxEqual(expected, net / factor)) {
+            corrections.push(`Line ${i + 1}: net ${net} → ${net / factor} (was ${factor}× too high, expected qty ${qty} × unitPrice ${unitPrice} = ${expected})`);
+            line.net = Number((net / factor).toFixed(2));
+            break;
+          }
+          if (approxEqual(expected * factor, net)) {
+            // unitPrice might be wrong
+            if (approxEqual(qty * (unitPrice / factor), net)) {
+              corrections.push(`Line ${i + 1}: unitPrice ${unitPrice} → ${unitPrice / factor} (was ${factor}× too high)`);
+              line.unitPrice = Number((unitPrice / factor).toFixed(2));
+              break;
+            }
+          }
+        }
+        // If net still doesn't match and qty + unitPrice look reasonable, recalculate net
+        const recalcNet = qty * (line.unitPrice != null ? Number(line.unitPrice) : unitPrice);
+        if (!approxEqual(recalcNet, Number(line.net))) {
+          // Trust qty and unitPrice, fix net
+          corrections.push(`Line ${i + 1}: recalculated net from qty × unitPrice: ${Number(line.net)} → ${recalcNet.toFixed(2)}`);
+          line.net = Number(recalcNet.toFixed(2));
+        }
+      }
+    }
+
+    // Calculate missing vatAmount from net and vatRate
+    if (line.net != null && line.vatRate != null && line.vatAmount == null) {
+      const calcVat = Number(line.net) * (Number(line.vatRate) / 100);
+      line.vatAmount = Number(calcVat.toFixed(2));
+      corrections.push(`Line ${i + 1}: calculated vatAmount = ${line.vatAmount}`);
+    }
+
+    // Calculate missing gross from net + vatAmount
+    if (line.net != null && line.vatAmount != null && line.gross == null) {
+      line.gross = Number((Number(line.net) + Number(line.vatAmount)).toFixed(2));
+      corrections.push(`Line ${i + 1}: calculated gross = ${line.gross}`);
+    }
+  }
+
+  // Recalculate header totals from lines if they don't match
+  if (lines.length > 0) {
+    const linesNetSum = lines.reduce((s, l) => s + Number(l.net || 0), 0);
+    const linesVatSum = lines.reduce((s, l) => s + Number(l.vatAmount || 0), 0);
+
+    if (extracted.netTotal != null && !approxEqual(linesNetSum, extracted.netTotal)) {
+      // Check if netTotal is off by factor of 10/100
+      for (const factor of [10, 100]) {
+        if (approxEqual(linesNetSum, Number(extracted.netTotal) / factor)) {
+          corrections.push(`netTotal ${extracted.netTotal} → ${Number(extracted.netTotal) / factor} (was ${factor}× too high, lines sum = ${linesNetSum.toFixed(2)})`);
+          extracted.netTotal = Number((Number(extracted.netTotal) / factor).toFixed(2));
+          break;
+        }
+      }
+    }
+
+    // If netTotal is still null or mismatched, derive from lines
+    if (extracted.netTotal == null || !approxEqual(linesNetSum, extracted.netTotal)) {
+      if (extracted.netTotal != null) {
+        corrections.push(`netTotal ${extracted.netTotal} → ${linesNetSum.toFixed(2)} (recalculated from lines)`);
+      }
+      extracted.netTotal = Number(linesNetSum.toFixed(2));
+    }
+
+    if (extracted.vatTotal == null && linesVatSum > 0) {
+      extracted.vatTotal = Number(linesVatSum.toFixed(2));
+      corrections.push(`vatTotal calculated from lines: ${extracted.vatTotal}`);
+    }
+
+    // Verify grossTotal = netTotal + vatTotal
+    if (extracted.netTotal != null && extracted.vatTotal != null) {
+      const expectedGross = Number(extracted.netTotal) + Number(extracted.vatTotal);
+      if (extracted.grossTotal == null || !approxEqual(expectedGross, extracted.grossTotal)) {
+        if (extracted.grossTotal != null) {
+          corrections.push(`grossTotal ${extracted.grossTotal} → ${expectedGross.toFixed(2)} (netTotal + vatTotal)`);
+        }
+        extracted.grossTotal = Number(expectedGross.toFixed(2));
+      }
+    }
+  }
+
+  return corrections;
 }
 
 async function saveExtractedData(invoiceId, extracted) {
@@ -141,22 +247,73 @@ async function processInvoice(invoiceId, pdfBuffer, filename) {
       await addLog(invoiceId, 'pdf_parse', 'warn', `PDF text extraction failed: ${err.message}`, null);
     }
 
+    const textForOpenAI = hasTextLayer
+      ? pdfText
+      : `[This invoice is a scanned image. Filename: ${filename}]`;
+
     // Step 2: Primary extraction with OpenAI
     let extracted = null;
     let usedFallback = false;
 
     if (process.env.OPENAI_API_KEY) {
       try {
-        const textForOpenAI = hasTextLayer
-          ? pdfText
-          : `[This invoice is a scanned image. Filename: ${filename}]`;
-
-        await addLog(invoiceId, 'extraction_openai', 'info', 'Starting OpenAI extraction', null);
+        await addLog(invoiceId, 'extraction_openai', 'info', 'Starting OpenAI extraction (structured output)', null);
         extracted = await openaiExtractor.extract(textForOpenAI, filename);
         await addLog(invoiceId, 'extraction_openai', 'info', `OpenAI extraction complete, confidence: ${extracted.confidence}`, {
           confidence: extracted.confidence,
           model: extracted.model,
         });
+
+        // Step 2b: Math auto-correction
+        const corrections = correctExtractedMath(extracted);
+        if (corrections.length > 0) {
+          await addLog(invoiceId, 'math_correction', 'warn',
+            `Applied ${corrections.length} math correction(s)`,
+            { corrections }
+          );
+        }
+
+        // Step 2c: Validate after correction
+        const firstValidation = validate(extracted);
+        const mathErrors = firstValidation.issues.filter(i =>
+          i.field && (i.field.includes('net') || i.field.includes('vat') || i.field.includes('gross') || i.field.includes('Total'))
+        );
+
+        // Step 2d: Retry once if there are math errors the correction couldn't fix
+        if (mathErrors.length > 0) {
+          await addLog(invoiceId, 'extraction_retry', 'info',
+            `Retrying OpenAI extraction due to ${mathErrors.length} math error(s)`,
+            { errors: mathErrors.map(e => e.message) }
+          );
+
+          try {
+            const retryResult = await openaiExtractor.extract(textForOpenAI, filename, {
+              previousErrors: mathErrors.map(e => e.message),
+              previousResponse: extracted.rawResponse,
+            });
+
+            // Apply math correction to retry result too
+            const retryCorrections = correctExtractedMath(retryResult);
+            const retryValidation = validate(retryResult);
+
+            // Use retry result if it has fewer issues
+            if (retryValidation.issues.length < firstValidation.issues.length) {
+              extracted = retryResult;
+              await addLog(invoiceId, 'extraction_retry', 'info',
+                `Retry improved: ${firstValidation.issues.length} → ${retryValidation.issues.length} issue(s)`,
+                { corrections: retryCorrections }
+              );
+            } else {
+              await addLog(invoiceId, 'extraction_retry', 'info',
+                'Retry did not improve results, keeping original', null
+              );
+            }
+          } catch (retryErr) {
+            await addLog(invoiceId, 'extraction_retry', 'warn',
+              `Retry failed: ${retryErr.message}`, null
+            );
+          }
+        }
       } catch (err) {
         await addLog(invoiceId, 'extraction_openai', 'error', `OpenAI extraction failed: ${err.message}`, null);
       }
@@ -189,7 +346,7 @@ async function processInvoice(invoiceId, pdfBuffer, filename) {
       return;
     }
 
-    // Step 4: Validate extracted data
+    // Step 4: Final validation
     const validation = validate(extracted);
     if (validation.issues.length > 0) {
       await addLog(invoiceId, 'validation', validation.valid ? 'warn' : 'error',
