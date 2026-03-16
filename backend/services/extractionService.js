@@ -85,6 +85,17 @@ function correctExtractedMath(extracted) {
       }
     }
 
+    // Calculate missing qty from net and unitPrice: qty = net / unitPrice
+    if (line.qty == null && line.net != null && line.unitPrice != null && Number(line.unitPrice) !== 0) {
+      const calcQty = Number(line.net) / Number(line.unitPrice);
+      // Only auto-fill if it's a clean number (integer or up to 3 decimals)
+      const rounded = Math.round(calcQty * 1000) / 1000;
+      if (approxEqual(rounded * Number(line.unitPrice), Number(line.net))) {
+        line.qty = rounded;
+        corrections.push(`Line ${i + 1}: calculated qty = ${line.qty} (net ${line.net} / unitPrice ${line.unitPrice})`);
+      }
+    }
+
     // Calculate missing vatAmount from net and vatRate
     if (line.net != null && line.vatRate != null && line.vatAmount == null) {
       const calcVat = Number(line.net) * (Number(line.vatRate) / 100);
