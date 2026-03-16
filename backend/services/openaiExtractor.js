@@ -74,9 +74,11 @@ const INVOICE_SCHEMA = {
 };
 
 // ── Extraction Prompt ──
-const EXTRACTION_PROMPT = `You are an invoice data extraction system. Extract all fields from the invoice text below.
+const EXTRACTION_PROMPT = `You are an invoice data extraction system. Extract all fields from the invoice image/document.
 
-LANGUAGE SUPPORT — invoices may be in Estonian, Finnish, English, or other languages.
+IMPORTANT: You are given the actual PDF/image of the invoice. Use the VISUAL layout to correctly identify table columns and their values. Do NOT guess column values from text alone — look at the actual column positions.
+
+LANGUAGE SUPPORT — invoices may be in Estonian, Finnish, English, German, or other languages.
 
 ESTONIAN FIELD MAPPINGS:
   Müüja / Hankija → supplierName
@@ -128,22 +130,23 @@ CRITICAL NUMBER FORMAT RULES:
 - ALWAYS return numbers with DOT decimal in JSON (never comma)
 - Strip currency symbols (€, $) — return pure numbers
 
-COLUMN PARSING — CRITICAL:
-- Invoice tables have distinct columns. Read each column value SEPARATELY.
-- DO NOT concatenate values from adjacent columns. "1" in quantity column and "3,57" in price column means qty=1 and unitPrice=3.57, NOT qty=13 and unitPrice=0.57.
-- The "total" column at the end of each line is the MOST RELIABLE value — use it as ground truth for "net".
+TABLE READING — CRITICAL:
+- Read each column value by its VISUAL POSITION under the column header. Do NOT merge adjacent values.
+- The LAST numeric column on each line row (often labeled "total", "kokku", "summa") is the line total → use it for "net".
+- "net" for a line = the line total column value from the document. This is the MOST RELIABLE value.
+- For "qty", read ONLY the value directly under the quantity column header. Common quantities are 1, 2, 3, etc.
+- For "unitPrice", read ONLY the value directly under the unit price / net price column header.
 - If the invoice has a "pos." or position column, those are supplier position numbers, NOT row sequential numbers.
-- Multi-order invoices may have "order no." header rows — these are NOT product lines, skip them.
+- Multi-order invoices may have "order no." header rows separating groups — these are NOT product lines, skip them.
 
 MATH CROSS-CHECKS — verify before returning:
-- Each line: qty × unitPrice should equal net (the line total). If not, something was misread.
-- CRITICAL: Sum of all line "net" values MUST equal netTotal. If it doesn't, re-read the lines.
+- Each line: qty × unitPrice should approximately equal net. If not, trust "net" (the line total column) and recalculate qty or unitPrice.
+- CRITICAL: Sum of all line "net" values MUST equal netTotal. If it doesn't, your line reading is wrong — re-read from the image.
 - netTotal + vatTotal should equal grossTotal
 - vatAmount for a line = net × (vatRate / 100)
-- If a line has qty=1, then unitPrice MUST equal net.
 
 DATE FORMAT:
-- Estonian/Finnish dates are DD.MM.YYYY → convert to YYYY-MM-DD
+- Estonian/Finnish/German dates are DD.MM.YYYY → convert to YYYY-MM-DD
 - "04.04.2025" → "2025-04-04"
 
 OTHER RULES:
@@ -154,10 +157,10 @@ OTHER RULES:
 - If a field is not present, return null`;
 
 /**
- * Primary extraction: call OpenAI with structured output schema.
+ * Primary extraction: call OpenAI with PDF image + text for structured output.
  * @param {string} invoiceText - extracted PDF text
  * @param {string} filename - original filename for context
- * @param {object} [options] - optional: { previousErrors } for retry
+ * @param {object} [options] - optional: { previousErrors, previousResponse, pdfBuffer }
  */
 async function extract(invoiceText, filename, options = {}) {
   const openai = getClient();
@@ -167,25 +170,40 @@ async function extract(invoiceText, filename, options = {}) {
     { role: 'system', content: EXTRACTION_PROMPT },
   ];
 
+  // Build the user message content parts
+  const userContentParts = [];
+
+  // Add PDF as base64 image if available (vision mode — GPT-4o can see the actual layout)
+  if (options.pdfBuffer) {
+    const base64Pdf = options.pdfBuffer.toString('base64');
+    userContentParts.push({
+      type: 'file',
+      file: {
+        filename: filename || 'invoice.pdf',
+        file_data: `data:application/pdf;base64,${base64Pdf}`,
+      },
+    });
+  }
+
+  // Also include extracted text as supplementary context
+  userContentParts.push({
+    type: 'text',
+    text: `Invoice filename: ${filename}\n\n--- EXTRACTED TEXT (supplementary, may have column alignment issues) ---\n${invoiceText}`,
+  });
+
   // On retry, include the previous errors so the model can self-correct
   if (options.previousErrors && options.previousErrors.length > 0) {
-    messages.push({
-      role: 'user',
-      content: `Invoice filename: ${filename}\n\n--- INVOICE TEXT ---\n${invoiceText}`,
-    });
+    messages.push({ role: 'user', content: userContentParts });
     messages.push({
       role: 'assistant',
       content: options.previousResponse || '(previous extraction had errors)',
     });
     messages.push({
       role: 'user',
-      content: `Your previous extraction had these errors:\n${options.previousErrors.map(e => `- ${e}`).join('\n')}\n\nPlease re-extract the invoice carefully. Pay special attention to:\n- European number format: comma (,) is decimal separator, NOT thousands\n- "Tk" column = quantity\n- Verify: qty × unitPrice = net for each line\n- Verify: netTotal + vatTotal = grossTotal`,
+      content: `Your previous extraction had these errors:\n${options.previousErrors.map(e => `- ${e}`).join('\n')}\n\nPlease re-extract the invoice carefully from the PDF image. Pay special attention to:\n- Read each table column VISUALLY — do not merge adjacent column values\n- The line total column is the most reliable source for "net"\n- Verify: sum of all line net values = netTotal\n- European number format: comma (,) is decimal separator, NOT thousands`,
     });
   } else {
-    messages.push({
-      role: 'user',
-      content: `Invoice filename: ${filename}\n\n--- INVOICE TEXT ---\n${invoiceText}`,
-    });
+    messages.push({ role: 'user', content: userContentParts });
   }
 
   const completion = await openai.chat.completions.create({

@@ -335,8 +335,8 @@ async function processInvoice(invoiceId, pdfBuffer, filename) {
 
     if (process.env.OPENAI_API_KEY) {
       try {
-        await addLog(invoiceId, 'extraction_openai', 'info', 'Starting OpenAI extraction (structured output)', null);
-        extracted = await openaiExtractor.extract(textForOpenAI, filename);
+        await addLog(invoiceId, 'extraction_openai', 'info', 'Starting OpenAI extraction (vision + structured output)', null);
+        extracted = await openaiExtractor.extract(textForOpenAI, filename, { pdfBuffer });
         await addLog(invoiceId, 'extraction_openai', 'info', `OpenAI extraction complete, confidence: ${extracted.confidence}`, {
           confidence: extracted.confidence,
           model: extracted.model,
@@ -366,6 +366,7 @@ async function processInvoice(invoiceId, pdfBuffer, filename) {
 
           try {
             const retryResult = await openaiExtractor.extract(textForOpenAI, filename, {
+              pdfBuffer,
               previousErrors: mathErrors.map(e => e.message),
               previousResponse: extracted.rawResponse,
             });
