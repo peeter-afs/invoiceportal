@@ -15,6 +15,7 @@ const { fetchPurchaseOrder, createPurchaseOrderFromInvoice } = require('../servi
 const { getReceivingPreview, postReceiving } = require('../services/receivingService');
 const { getConsolidationState, applyConsolidationActions } = require('../services/consolidationService');
 const { getTenantSettings } = require('../services/tenantService');
+const { lookupFutursoftSupplierNr } = require('../services/supplierService');
 
 function normalizeInvoice(row, lines = []) {
   if (!row) return null;
@@ -434,6 +435,12 @@ router.post('/:id/submit', auth, requireRole('reviewer', 'tenant_admin'), async 
 router.post('/:id/approve', auth, requireRole('approver', 'tenant_admin'), async (req, res) => {
   try {
     await approve(req.params.id, req.tenantId, req.userId, req.user.role, req.body.comment);
+
+    // After approval: look up Futursoft supplier number (non-blocking)
+    lookupFutursoftSupplierNr(req.params.id, req.session).catch((err) => {
+      console.error(`[approve] FS supplier lookup failed for ${req.params.id}: ${err.message}`);
+    });
+
     res.json({ message: 'Invoice approved' });
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });

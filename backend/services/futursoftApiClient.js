@@ -48,6 +48,7 @@ class FutursoftApiClient {
     this.session = session; // { fsAccessToken, fsRefreshToken, fsTokenExpiresAt, tenantId }
     this.baseUrl = (tenantSettings?.futursoft_base_url || process.env.FS_API_BASE_URL || '').replace(/\/$/, '');
     this.wsBaseUrl = (tenantSettings?.futursoft_ws_base_url || process.env.FS_WS_API_BASE_URL || '').replace(/\/$/, '');
+    this.salesBaseUrl = (process.env.FS_SALES_API_BASE_URL || '').replace(/\/$/, '');
     this.subscriptionKey = tenantSettings?.futursoft_subscription_key || process.env.FS_SUBSCRIPTION_KEY;
     this.mockMode = process.env.FS_MOCK_API === 'true';
   }
@@ -162,6 +163,79 @@ class FutursoftApiClient {
       }
       throw err;
     }
+  }
+
+  async _salesRequest(method, path, data) {
+    if (this.mockMode) {
+      throw new Error('Mock mode: use specific mock methods');
+    }
+    if (!this.salesBaseUrl) {
+      throw new Error('Sales API base URL (FS_SALES_API_BASE_URL) is not configured');
+    }
+    await this._ensureValidToken();
+
+    const url = `${this.salesBaseUrl}${path}`;
+    console.log(`[futursoft-sales] ${method} ${url}`);
+
+    const headers = {
+      Authorization: `Bearer ${this.session.fsAccessToken}`,
+      'Content-Type': 'application/json',
+    };
+    if (this.subscriptionKey) {
+      headers['Ocp-Apim-Subscription-Key'] = this.subscriptionKey;
+    }
+
+    try {
+      const response = await axios({
+        method,
+        url,
+        headers,
+        data: data || undefined,
+        timeout: 30000,
+      });
+      console.log(`[futursoft-sales] ${method} ${url} → ${response.status}`);
+      if (FS_DEBUG) {
+        console.log(`[futursoft-sales] Response body:`, JSON.stringify(response.data).slice(0, 2000));
+      }
+      return response.data;
+    } catch (err) {
+      const status = err.response?.status || 'no response';
+      const body = JSON.stringify(err.response?.data || err.message).slice(0, 500);
+      console.error(`[futursoft-sales] ${method} ${url} → FAILED (${status}): ${body}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Search Futursoft suppliers by name (Sales API).
+   * Returns the supplierNr if a match is found, or 0 if not.
+   */
+  async searchSupplierByName(name) {
+    if (this.mockMode) return 0;
+    if (!this.salesBaseUrl) return 0;
+
+    const payload = {
+      name: [{ operator: 'Includes', value: name }],
+    };
+
+    try {
+      const data = await this._salesRequest('POST', '/product/v1/suppliers/search', payload);
+      const items = data?.items || data;
+      if (!Array.isArray(items)) return 0;
+
+      for (const row of items) {
+        if (!row || typeof row !== 'object') continue;
+        for (const key of ['supplierNr', 'number', 'id']) {
+          if (row[key] != null && !isNaN(Number(row[key]))) {
+            return String(row[key]);
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`[futursoft-sales] Supplier search failed for "${name}": ${err.message}`);
+    }
+
+    return 0;
   }
 
   async getPurchaseOrder(purchaseOrderNr) {

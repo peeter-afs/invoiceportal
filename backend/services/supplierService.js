@@ -185,6 +185,82 @@ async function removeAlias(aliasId) {
   return result.affectedRows > 0;
 }
 
+/**
+ * Strip common legal suffixes and extra whitespace from a supplier name.
+ */
+function cleanSupplierName(name) {
+  if (!name) return '';
+  return name
+    .replace(/\b(O[ÜU]|AS|LLC|Ltd\.?|Oy|Ab|GmbH|Inc\.?|S\.?A\.?|SIA|UAB|S\.?R\.?L\.?)\b\.?/gi, '')
+    .replace(/[,.\-]+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Lookup and store the Futursoft supplier number by searching the Sales API.
+ * Performs up to 3 progressive name searches:
+ *   1. Full cleaned name
+ *   2. First two words of the cleaned name
+ *   3. First word of the cleaned name
+ * Skips the API call if the supplier already has a futursoft_supplier_nr.
+ *
+ * @param {string} invoiceId
+ * @param {object} session  Express session with fsAccessToken (needed for FS API)
+ */
+async function lookupFutursoftSupplierNr(invoiceId, session) {
+  // Get supplier linked to this invoice
+  const rows = await query(
+    'SELECT supplier_id FROM invoices WHERE id = ? LIMIT 1',
+    [invoiceId]
+  );
+  if (!rows[0]?.supplier_id) return;
+
+  const supplierId = rows[0].supplier_id;
+  const suppliers = await query(
+    'SELECT id, name, futursoft_supplier_nr, tenant_id FROM suppliers WHERE id = ? LIMIT 1',
+    [supplierId]
+  );
+  if (!suppliers[0]) return;
+
+  const supplier = suppliers[0];
+
+  // Already has a Futursoft supplier number — nothing to do
+  if (supplier.futursoft_supplier_nr) return;
+
+  // Need FS API client
+  const { createFromSession } = require('./futursoftApiClient');
+  let client;
+  try {
+    client = await createFromSession(session);
+  } catch {
+    return; // FS not configured or no token
+  }
+
+  const cleaned = cleanSupplierName(supplier.name);
+  const words = cleaned.split(/\s+/).filter(Boolean);
+
+  // Build search candidates: full name, first 2 words, first word
+  const candidates = [cleaned];
+  if (words.length > 2) candidates.push(words.slice(0, 2).join(' '));
+  if (words.length > 1) candidates.push(words[0]);
+
+  for (const searchTerm of candidates) {
+    if (!searchTerm) continue;
+    const nr = await client.searchSupplierByName(searchTerm);
+    if (nr && nr !== 0 && nr !== '0') {
+      await query(
+        'UPDATE suppliers SET futursoft_supplier_nr = ? WHERE id = ?',
+        [String(nr), supplierId]
+      );
+      console.log(`[supplier] Resolved FS supplier nr ${nr} for "${supplier.name}" (search: "${searchTerm}")`);
+      return;
+    }
+  }
+
+  console.log(`[supplier] No FS supplier nr found for "${supplier.name}" after ${candidates.length} searches`);
+}
+
 module.exports = {
   findSupplier,
   resolveSupplier,
@@ -195,4 +271,5 @@ module.exports = {
   deleteSupplier,
   addAlias,
   removeAlias,
+  lookupFutursoftSupplierNr,
 };
