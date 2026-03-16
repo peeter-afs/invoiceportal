@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { invoiceAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -28,6 +28,39 @@ function InvoiceDetail() {
   const [error, setError] = useState('');
   const [showPdf, setShowPdf] = useState(false);
   const [pdfBlobUrl, setPdfBlobUrl] = useState(null);
+  const [leftPanelWidth, setLeftPanelWidth] = useState(50); // percentage
+  const isDragging = useRef(false);
+  const containerRef = useRef(null);
+
+  // Resize drag handlers
+  const handleMouseDown = useCallback((e) => {
+    e.preventDefault();
+    isDragging.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
+
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      if (!isDragging.current || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const pct = ((e.clientX - rect.left) / rect.width) * 100;
+      setLeftPanelWidth(Math.min(80, Math.max(25, pct)));
+    };
+    const handleMouseUp = () => {
+      if (isDragging.current) {
+        isDragging.current = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
 
   const fetchInvoice = useCallback(async () => {
     try {
@@ -100,9 +133,9 @@ function InvoiceDetail() {
         </div>
       </nav>
 
-      <div style={{ display: 'flex', gap: '1rem', padding: '0 1rem', maxWidth: showPdf ? '1600px' : '1100px', margin: '0 auto' }}>
+      <div ref={containerRef} style={{ display: 'flex', padding: '0 1rem', maxWidth: showPdf ? '100%' : '1100px', margin: '0 auto' }}>
         {/* Left: Invoice data */}
-        <div style={{ flex: showPdf ? '1 1 50%' : '1 1 100%', minWidth: 0 }}>
+        <div style={{ width: showPdf ? `${leftPanelWidth}%` : '100%', flexShrink: 0, minWidth: 0, paddingRight: showPdf ? '0.5rem' : 0 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', marginTop: '1rem' }}>
             <h2>Invoice Detail</h2>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
@@ -346,10 +379,29 @@ function InvoiceDetail() {
           )}
         </div>
 
+        {/* Resize Handle */}
+        {showPdf && (
+          <div
+            onMouseDown={handleMouseDown}
+            style={{
+              width: '6px',
+              cursor: 'col-resize',
+              backgroundColor: '#ddd',
+              borderRadius: '3px',
+              marginTop: '1rem',
+              marginBottom: '1rem',
+              flexShrink: 0,
+              transition: 'background-color 0.15s',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#aaa'; }}
+            onMouseLeave={(e) => { if (!isDragging.current) e.currentTarget.style.backgroundColor = '#ddd'; }}
+          />
+        )}
+
         {/* Right: PDF Preview Sidebar */}
         {showPdf && (
           <div style={{
-            flex: '1 1 50%',
+            flex: 1,
             position: 'sticky',
             top: '1rem',
             alignSelf: 'flex-start',
