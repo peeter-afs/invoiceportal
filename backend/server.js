@@ -76,6 +76,7 @@ const uploadRoutes = require('./routes/upload');
 const futursoftRoutes = require('./routes/futursoft');
 const emailRoutes = require('./routes/email');
 const settingsRoutes = require('./routes/settings');
+const supplierRoutes = require('./routes/suppliers');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/invoices', invoiceRoutes);
@@ -84,6 +85,7 @@ app.use('/api/upload', uploadRoutes);
 app.use('/api/futursoft', futursoftRoutes);
 app.use('/api/email', emailRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/suppliers', supplierRoutes);
 
 // Health check endpoint
 app.get('/api/health', async (req, res) => {

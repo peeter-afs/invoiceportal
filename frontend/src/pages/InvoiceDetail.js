@@ -175,7 +175,12 @@ function InvoiceDetail() {
                 <h3>Supplier</h3>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                   <div>
-                    <strong>Name:</strong><br />{invoice.supplierName || '-'}
+                    <strong>Name:</strong><br />
+                    {invoice.supplierId ? (
+                      <Link to={`/suppliers/${invoice.supplierId}`}>{invoice.supplierName || '-'}</Link>
+                    ) : (
+                      invoice.supplierName || '-'
+                    )}
                   </div>
                   <div>
                     <strong>Address:</strong><br />{invoice.supplierAddress || '-'}

@@ -11,7 +11,7 @@ const api = axios.create({
 });
 
 // Extract tenant key from URL path (first segment if it's not a known route)
-const KNOWN_ROUTES = ['login', 'dashboard', 'invoices', 'settings', 'api'];
+const KNOWN_ROUTES = ['login', 'dashboard', 'invoices', 'suppliers', 'settings', 'api'];
 
 function getTenantKeyFromUrl() {
   const segments = window.location.pathname.split('/').filter(Boolean);
@@ -88,6 +88,17 @@ export const userAPI = {
 export const settingsAPI = {
   get: () => api.get('/settings'),
   update: (data) => api.put('/settings', data),
+};
+
+// Supplier API
+export const supplierAPI = {
+  getAll: () => api.get('/suppliers'),
+  getById: (id) => api.get(`/suppliers/${id}`),
+  create: (data) => api.post('/suppliers', data),
+  update: (id, data) => api.put(`/suppliers/${id}`, data),
+  delete: (id) => api.delete(`/suppliers/${id}`),
+  addAlias: (id, alias) => api.post(`/suppliers/${id}/aliases`, { alias }),
+  removeAlias: (id, aliasId) => api.delete(`/suppliers/${id}/aliases/${aliasId}`),
 };
 
 // Email Inbox API (admin only)

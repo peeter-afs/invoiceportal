@@ -49,6 +49,7 @@ function Dashboard() {
           <Link to="/dashboard">Dashboard</Link>
           <Link to="/invoices">Invoices</Link>
           <Link to="/invoices/upload">Upload Invoice</Link>
+          <Link to="/suppliers">Suppliers</Link>
           {user?.role === 'tenant_admin' && (
             <>
               <Link to="/settings/workflow">Workflow Settings</Link>

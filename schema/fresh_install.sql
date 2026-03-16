@@ -11,6 +11,8 @@ DROP TABLE IF EXISTS processing_logs;
 DROP TABLE IF EXISTS invoice_lines;
 DROP TABLE IF EXISTS invoice_files;
 DROP TABLE IF EXISTS invoices;
+DROP TABLE IF EXISTS supplier_aliases;
+DROP TABLE IF EXISTS suppliers;
 DROP TABLE IF EXISTS role_changes;
 DROP TABLE IF EXISTS user_tenants;
 DROP TABLE IF EXISTS portal_users;
@@ -146,7 +148,44 @@ CREATE TABLE role_changes (
 ) ENGINE=InnoDB;
 
 -- ============================================================
--- 7. Invoices
+-- 7. Suppliers
+-- ============================================================
+CREATE TABLE suppliers (
+  id CHAR(36) NOT NULL DEFAULT (UUID()),
+  tenant_id CHAR(36) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  vat_number VARCHAR(64) NULL,
+  reg_number VARCHAR(64) NULL,
+  address TEXT NULL,
+  bank_account VARCHAR(64) NULL,
+  futursoft_supplier_nr VARCHAR(64) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_suppliers_tenant (tenant_id),
+  UNIQUE KEY ux_suppliers_tenant_name (tenant_id, name),
+  KEY idx_suppliers_tenant_fs_nr (tenant_id, futursoft_supplier_nr),
+  CONSTRAINT fk_suppliers_tenant
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ============================================================
+-- 7b. Supplier Aliases
+-- ============================================================
+CREATE TABLE supplier_aliases (
+  id CHAR(36) NOT NULL DEFAULT (UUID()),
+  supplier_id CHAR(36) NOT NULL,
+  alias VARCHAR(255) NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY ux_supplier_aliases_alias (supplier_id, alias),
+  KEY idx_supplier_aliases_supplier (supplier_id),
+  CONSTRAINT fk_supplier_aliases_supplier
+    FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ============================================================
+-- 8. Invoices
 -- ============================================================
 CREATE TABLE invoices (
   id CHAR(36) NOT NULL DEFAULT (UUID()),
@@ -163,6 +202,7 @@ CREATE TABLE invoices (
   file_hash VARCHAR(128) NULL,
   original_filename VARCHAR(512) NULL,
   supplier_name VARCHAR(255) NULL,
+  supplier_id CHAR(36) NULL,
   invoice_number VARCHAR(255) NULL,
   invoice_date DATE NULL,
   due_date DATE NULL,
@@ -204,6 +244,9 @@ CREATE TABLE invoices (
   CONSTRAINT fk_invoices_tenant
     FOREIGN KEY (tenant_id) REFERENCES tenants(id)
     ON DELETE CASCADE,
+  KEY idx_invoices_supplier (supplier_id),
+  CONSTRAINT fk_invoices_supplier
+    FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE SET NULL,
   CONSTRAINT fk_invoices_approved_by
     FOREIGN KEY (approved_by) REFERENCES portal_users(id)
     ON DELETE SET NULL,
@@ -325,4 +368,5 @@ INSERT INTO schema_migrations (name) VALUES
   ('002_target_schema.sql'),
   ('003_drop_credentials.sql'),
   ('004_email_inboxes.sql'),
-  ('005_workflow_steps.sql');
+  ('005_workflow_steps.sql'),
+  ('006_suppliers.sql');

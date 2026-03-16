@@ -4,6 +4,7 @@ const { query } = require('../db');
 const openaiExtractor = require('./openaiExtractor');
 const costpocketExtractor = require('./costpocketExtractor');
 const { validate } = require('./validationService');
+const { resolveSupplier } = require('./supplierService');
 
 const MIN_CONFIDENCE = 0.6; // below this, try CostPocket fallback
 const TOLERANCE = 0.02; // 2 cent tolerance for rounding
@@ -446,6 +447,23 @@ async function processInvoice(invoiceId, pdfBuffer, filename) {
     await addLog(invoiceId, 'normalization', 'info', `Saved: ${(extracted.lines || []).length} lines`, {
       extractedBy: extracted.extractedBy,
     });
+
+    // Step 5b: Resolve supplier
+    try {
+      const invoiceRow = await query('SELECT tenant_id FROM invoices WHERE id = ? LIMIT 1', [invoiceId]);
+      if (invoiceRow[0]) {
+        const supplier = await resolveSupplier(invoiceRow[0].tenant_id, extracted);
+        if (supplier) {
+          await query('UPDATE invoices SET supplier_id = ? WHERE id = ?', [supplier.id, invoiceId]);
+          await addLog(invoiceId, 'supplier_resolve', 'info',
+            `Linked to supplier: ${supplier.name}${supplier.futursoft_supplier_nr ? ` (FS# ${supplier.futursoft_supplier_nr})` : ''}`,
+            { supplierId: supplier.id, supplierName: supplier.name }
+          );
+        }
+      }
+    } catch (supplierErr) {
+      await addLog(invoiceId, 'supplier_resolve', 'warn', `Supplier resolution failed: ${supplierErr.message}`, null);
+    }
 
     // Step 6: Determine final status
     const hasIssues = !validation.valid || (extracted.confidence || 1) < 0.75 || usedFallback;

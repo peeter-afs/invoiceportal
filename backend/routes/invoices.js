@@ -27,6 +27,8 @@ function normalizeInvoice(row, lines = []) {
     supplierRegNumber: row.supplier_reg_number,
     supplierVatNumber: row.supplier_vat_number,
     supplierBankAccount: row.supplier_bank_account,
+    supplierId: row.supplier_id || null,
+    futursoftSupplierNr: row.supplier_futursoft_nr || null,
     invoiceNumber: row.invoice_number,
     invoiceDate: row.invoice_date,
     dueDate: row.due_date,
@@ -67,13 +69,14 @@ function normalizeInvoice(row, lines = []) {
   };
 }
 
-const INVOICE_COLUMNS = `id, tenant_id, status, source_type, supplier_name, supplier_address,
-  supplier_reg_number, supplier_vat_number, supplier_bank_account,
-  invoice_number, invoice_date, due_date, currency, net_total, vat_total, gross_total,
-  purchase_order_nr, reference_number, penalty_rate, payment_terms,
-  delivery_date, delivery_method, delivery_note_nr, buyer_reference, seller_reference,
-  requires_approval, approval_status, original_filename,
-  error_message, created_by, created_at, updated_at`;
+const INVOICE_COLUMNS = `i.id, i.tenant_id, i.status, i.source_type, i.supplier_name, i.supplier_address,
+  i.supplier_id, i.supplier_reg_number, i.supplier_vat_number, i.supplier_bank_account,
+  i.invoice_number, i.invoice_date, i.due_date, i.currency, i.net_total, i.vat_total, i.gross_total,
+  i.purchase_order_nr, i.reference_number, i.penalty_rate, i.payment_terms,
+  i.delivery_date, i.delivery_method, i.delivery_note_nr, i.buyer_reference, i.seller_reference,
+  i.requires_approval, i.approval_status, i.original_filename,
+  i.error_message, i.created_by, i.created_at, i.updated_at,
+  s.futursoft_supplier_nr AS supplier_futursoft_nr`;
 
 async function fetchInvoiceLines(invoiceIds) {
   if (!invoiceIds || invoiceIds.length === 0) return [];
@@ -93,9 +96,10 @@ router.get('/', auth, async (req, res) => {
   try {
     const invoices = await query(
       `SELECT ${INVOICE_COLUMNS}
-       FROM invoices
-       WHERE tenant_id = ?
-       ORDER BY created_at DESC`,
+       FROM invoices i
+       LEFT JOIN suppliers s ON s.id = i.supplier_id
+       WHERE i.tenant_id = ?
+       ORDER BY i.created_at DESC`,
       [req.tenantId]
     );
 
@@ -116,8 +120,9 @@ router.get('/:id', auth, async (req, res) => {
   try {
     const invoices = await query(
       `SELECT ${INVOICE_COLUMNS}
-       FROM invoices
-       WHERE id = ? AND tenant_id = ?
+       FROM invoices i
+       LEFT JOIN suppliers s ON s.id = i.supplier_id
+       WHERE i.id = ? AND i.tenant_id = ?
        LIMIT 1`,
       [req.params.id, req.tenantId]
     );
@@ -220,7 +225,7 @@ router.post('/', auth, async (req, res) => {
       await conn.commit();
 
       const created = await query(
-        `SELECT ${INVOICE_COLUMNS} FROM invoices WHERE id = ? LIMIT 1`,
+        `SELECT ${INVOICE_COLUMNS} FROM invoices i LEFT JOIN suppliers s ON s.id = i.supplier_id WHERE i.id = ? LIMIT 1`,
         [invoiceId]
       );
       const createdLines = await query(
@@ -326,7 +331,7 @@ router.put('/:id', auth, async (req, res) => {
       await conn.commit();
 
       const updated = await query(
-        `SELECT ${INVOICE_COLUMNS} FROM invoices WHERE id = ? LIMIT 1`,
+        `SELECT ${INVOICE_COLUMNS} FROM invoices i LEFT JOIN suppliers s ON s.id = i.supplier_id WHERE i.id = ? LIMIT 1`,
         [invoiceId]
       );
       const updatedLines = await query(
