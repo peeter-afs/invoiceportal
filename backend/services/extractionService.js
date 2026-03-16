@@ -330,14 +330,18 @@ async function processInvoice(invoiceId, pdfBuffer, filename) {
       : `[This invoice is a scanned image. Filename: ${filename}]`;
 
     // Step 2: Primary extraction with OpenAI
+    // First try uses OPENAI_MODEL (default: gpt-4o-mini, cheaper/faster).
+    // Retry on math errors uses OPENAI_RETRY_MODEL (default: gpt-4o, more capable).
     let extracted = null;
     let usedFallback = false;
+    const primaryModel = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+    const retryModel = process.env.OPENAI_RETRY_MODEL || 'gpt-4o';
 
     if (process.env.OPENAI_API_KEY) {
       try {
-        await addLog(invoiceId, 'extraction_openai', 'info', 'Starting OpenAI extraction (vision + structured output)', null);
-        extracted = await openaiExtractor.extract(textForOpenAI, filename, { pdfBuffer });
-        await addLog(invoiceId, 'extraction_openai', 'info', `OpenAI extraction complete, confidence: ${extracted.confidence}`, {
+        await addLog(invoiceId, 'extraction_openai', 'info', `Starting OpenAI extraction with ${primaryModel} (vision + structured output)`, null);
+        extracted = await openaiExtractor.extract(textForOpenAI, filename, { pdfBuffer, model: primaryModel });
+        await addLog(invoiceId, 'extraction_openai', 'info', `OpenAI extraction complete (${extracted.model}), confidence: ${extracted.confidence}`, {
           confidence: extracted.confidence,
           model: extracted.model,
         });
@@ -357,16 +361,17 @@ async function processInvoice(invoiceId, pdfBuffer, filename) {
           i.field && (i.field.includes('net') || i.field.includes('vat') || i.field.includes('gross') || i.field.includes('Total'))
         );
 
-        // Step 2d: Retry once if there are math errors the correction couldn't fix
+        // Step 2d: Retry with more capable model if there are math errors
         if (mathErrors.length > 0) {
           await addLog(invoiceId, 'extraction_retry', 'info',
-            `Retrying OpenAI extraction due to ${mathErrors.length} math error(s)`,
+            `Retrying with ${retryModel} due to ${mathErrors.length} math error(s)`,
             { errors: mathErrors.map(e => e.message) }
           );
 
           try {
             const retryResult = await openaiExtractor.extract(textForOpenAI, filename, {
               pdfBuffer,
+              model: retryModel,
               previousErrors: mathErrors.map(e => e.message),
               previousResponse: extracted.rawResponse,
             });
@@ -379,17 +384,17 @@ async function processInvoice(invoiceId, pdfBuffer, filename) {
             if (retryValidation.issues.length < firstValidation.issues.length) {
               extracted = retryResult;
               await addLog(invoiceId, 'extraction_retry', 'info',
-                `Retry improved: ${firstValidation.issues.length} → ${retryValidation.issues.length} issue(s)`,
+                `Retry with ${retryModel} improved: ${firstValidation.issues.length} → ${retryValidation.issues.length} issue(s)`,
                 { corrections: retryCorrections }
               );
             } else {
               await addLog(invoiceId, 'extraction_retry', 'info',
-                'Retry did not improve results, keeping original', null
+                `Retry with ${retryModel} did not improve results, keeping ${primaryModel} result`, null
               );
             }
           } catch (retryErr) {
             await addLog(invoiceId, 'extraction_retry', 'warn',
-              `Retry failed: ${retryErr.message}`, null
+              `Retry with ${retryModel} failed: ${retryErr.message}`, null
             );
           }
         }

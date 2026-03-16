@@ -206,7 +206,7 @@ OTHER RULES:
  */
 async function extract(invoiceText, filename, options = {}) {
   const openai = getClient();
-  const model = process.env.OPENAI_MODEL || 'gpt-4o';
+  const model = options.model || process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
   const messages = [
     { role: 'system', content: EXTRACTION_PROMPT },
