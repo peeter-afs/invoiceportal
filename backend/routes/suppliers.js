@@ -47,8 +47,8 @@ router.post('/', adminAuth, async (req, res) => {
   }
 });
 
-// PUT /api/suppliers/:id — update supplier (admin)
-router.put('/:id', adminAuth, async (req, res) => {
+// PUT /api/suppliers/:id — update supplier (any authenticated user)
+router.put('/:id', auth, async (req, res) => {
   try {
     const supplier = await updateSupplier(req.tenantId, req.params.id, req.body);
     if (!supplier) return res.status(404).json({ error: 'Supplier not found' });

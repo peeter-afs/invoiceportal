@@ -87,8 +87,8 @@ async function approve(invoiceId, tenantId, userId, role, comment) {
         await query('UPDATE invoices SET supplier_id = ? WHERE id = ?', [supplier.id, invoiceId]);
       }
     }
-  } catch {
-    // non-fatal: supplier resolution errors should not block approval
+  } catch (err) {
+    console.error(`[approval] Supplier resolution failed for invoice ${invoiceId}:`, err.message);
   }
 }
 

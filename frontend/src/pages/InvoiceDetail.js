@@ -254,17 +254,10 @@ function InvoiceDetail() {
                   ) : (
                     <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
                       {invoice.supplierId ? (
-                        <>
-                          <span>
-                            <strong>Linked:</strong>{' '}
-                            <Link to={`/suppliers/${invoice.supplierId}`}>{invoice.supplierName}</Link>
-                          </span>
-                          {invoice.futursoftSupplierNr && (
-                            <span style={{ color: '#666' }}>
-                              FS# {invoice.futursoftSupplierNr}
-                            </span>
-                          )}
-                        </>
+                        <span>
+                          <strong>Linked:</strong>{' '}
+                          <Link to={`/suppliers/${invoice.supplierId}`}>{invoice.supplierName}</Link>
+                        </span>
                       ) : (
                         <span style={{ color: '#e67e22' }}>
                           Not linked to supplier registry
@@ -298,18 +291,22 @@ function InvoiceDetail() {
                           <button className="btn btn-primary" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={handleSaveFsNr}>Save</button>
                           <button className="btn" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={() => setEditingFsNr(false)}>Cancel</button>
                         </div>
-                      ) : !invoice.futursoftSupplierNr ? (
+                      ) : (
                         <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                          <span style={{ color: '#999', fontSize: '0.9em' }}>Futursoft # not resolved</span>
+                          {invoice.futursoftSupplierNr ? (
+                            <span style={{ fontSize: '0.9em' }}><strong>Futursoft #:</strong> {invoice.futursoftSupplierNr}</span>
+                          ) : (
+                            <span style={{ color: '#999', fontSize: '0.9em' }}>Futursoft # not resolved</span>
+                          )}
                           <button
                             className="btn"
                             style={{ fontSize: '0.8rem', padding: '0.25rem 0.6rem', backgroundColor: '#ecf0f1', color: '#333' }}
-                            onClick={() => { setFsNrValue(''); setEditingFsNr(true); }}
+                            onClick={() => { setFsNrValue(invoice.futursoftSupplierNr || ''); setEditingFsNr(true); }}
                           >
-                            Enter manually
+                            {invoice.futursoftSupplierNr ? 'Edit' : 'Enter manually'}
                           </button>
                         </div>
-                      ) : null}
+                      )}
                     </div>
                   )}
                 </div>
