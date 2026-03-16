@@ -3,6 +3,7 @@ const router = express.Router();
 const crypto = require('crypto');
 const { getPool, query } = require('../db');
 const { auth, requireRole } = require('../middleware/auth');
+const { readFile, fileExists } = require('../services/fileService');
 const {
   submitForApproval,
   approve,
@@ -368,6 +369,29 @@ router.get('/:id/logs', auth, async (req, res) => {
       ...l,
       payload: l.payload ? JSON.parse(l.payload) : null,
     })));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get the PDF file for an invoice
+router.get('/:id/file', auth, async (req, res) => {
+  try {
+    const files = await query(
+      'SELECT storage_key, filename, mime FROM invoice_files WHERE invoice_id = ? LIMIT 1',
+      [req.params.id]
+    );
+    if (files.length === 0) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    const file = files[0];
+    if (!fileExists(file.storage_key)) {
+      return res.status(404).json({ error: 'File not found on disk' });
+    }
+    const buffer = readFile(file.storage_key);
+    res.setHeader('Content-Type', file.mime || 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${file.filename}"`);
+    res.send(buffer);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
