@@ -34,6 +34,8 @@ function InvoiceDetail() {
   const [suppliers, setSuppliers] = useState([]);
   const [editingSupplier, setEditingSupplier] = useState(false);
   const [selectedSupplierId, setSelectedSupplierId] = useState('');
+  const [editingFsNr, setEditingFsNr] = useState(false);
+  const [fsNrValue, setFsNrValue] = useState('');
 
   // Resize drag handlers
   const handleMouseDown = useCallback((e) => {
@@ -84,9 +86,22 @@ function InvoiceDetail() {
     try {
       await invoiceAPI.update(id, { supplierId: selectedSupplierId || null });
       setEditingSupplier(false);
+      // Refresh suppliers list too (FS nr may have been auto-looked up)
+      supplierAPI.getAll().then((res) => setSuppliers(res.data)).catch(() => {});
       fetchInvoice();
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to update supplier');
+    }
+  };
+
+  const handleSaveFsNr = async () => {
+    if (!invoice.supplierId) return;
+    try {
+      await supplierAPI.update(invoice.supplierId, { futursoftSupplierNr: fsNrValue || '' });
+      setEditingFsNr(false);
+      fetchInvoice();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to update Futursoft supplier nr');
     }
   };
 
@@ -238,9 +253,36 @@ function InvoiceDetail() {
                       <strong>VAT Number:</strong><br />{invoice.supplierVatNumber}
                     </div>
                   )}
-                  {invoice.futursoftSupplierNr && (
+                  {invoice.supplierId && (
                     <div>
-                      <strong>Futursoft #:</strong><br />{invoice.futursoftSupplierNr}
+                      <strong>Futursoft #:</strong><br />
+                      {editingFsNr ? (
+                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.25rem' }}>
+                          <input
+                            type="text"
+                            value={fsNrValue}
+                            onChange={(e) => setFsNrValue(e.target.value)}
+                            placeholder="Supplier nr..."
+                            style={{ width: '120px', padding: '0.3rem' }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') handleSaveFsNr(); }}
+                          />
+                          <button className="btn btn-primary" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={handleSaveFsNr}>Save</button>
+                          <button className="btn" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={() => setEditingFsNr(false)}>Cancel</button>
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                          <span style={{ color: invoice.futursoftSupplierNr ? 'inherit' : '#999' }}>
+                            {invoice.futursoftSupplierNr || 'not found'}
+                          </span>
+                          <button
+                            className="btn"
+                            style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem', backgroundColor: '#ecf0f1', color: '#333' }}
+                            onClick={() => { setFsNrValue(invoice.futursoftSupplierNr || ''); setEditingFsNr(true); }}
+                          >
+                            Edit
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                   {invoice.supplierBankAccount && (

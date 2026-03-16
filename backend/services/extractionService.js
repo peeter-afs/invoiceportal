@@ -4,7 +4,7 @@ const { query } = require('../db');
 const openaiExtractor = require('./openaiExtractor');
 const costpocketExtractor = require('./costpocketExtractor');
 const { validate } = require('./validationService');
-const { findSupplier } = require('./supplierService');
+const { findSupplier, lookupFutursoftSupplierNr } = require('./supplierService');
 
 const MIN_CONFIDENCE = 0.6; // below this, try CostPocket fallback
 const TOLERANCE = 0.02; // 2 cent tolerance for rounding
@@ -306,7 +306,7 @@ async function saveExtractedData(invoiceId, extracted) {
  * Main extraction pipeline. Called after file upload.
  * Runs asynchronously — does not block the HTTP response.
  */
-async function processInvoice(invoiceId, pdfBuffer, filename) {
+async function processInvoice(invoiceId, pdfBuffer, filename, session) {
   try {
     await updateInvoiceStatus(invoiceId, 'processing');
     await addLog(invoiceId, 'processing_start', 'info', 'Started processing', { filename });
@@ -467,6 +467,15 @@ async function processInvoice(invoiceId, pdfBuffer, filename) {
       }
     } catch (supplierErr) {
       await addLog(invoiceId, 'supplier_link', 'warn', `Supplier lookup failed: ${supplierErr.message}`, null);
+    }
+
+    // Step 5c: Lookup Futursoft supplier number (if session available)
+    if (session?.fsAccessToken) {
+      try {
+        await lookupFutursoftSupplierNr(invoiceId, session);
+      } catch (fsErr) {
+        await addLog(invoiceId, 'supplier_fs_lookup', 'warn', `FS supplier nr lookup failed: ${fsErr.message}`, null);
+      }
     }
 
     // Step 6: Determine final status

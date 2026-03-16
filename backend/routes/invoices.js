@@ -343,6 +343,13 @@ router.put('/:id', auth, async (req, res) => {
         [invoiceId]
       );
 
+      // If supplier was changed, trigger FS supplier nr lookup (non-blocking)
+      if (Object.prototype.hasOwnProperty.call(req.body, 'supplierId') && req.body.supplierId) {
+        lookupFutursoftSupplierNr(invoiceId, req.session).catch((err) => {
+          console.error(`[invoice-update] FS supplier lookup failed: ${err.message}`);
+        });
+      }
+
       res.json(normalizeInvoice(updated[0], updatedLines));
     } catch (error) {
       try { await conn.rollback(); } catch { /* ignore */ }

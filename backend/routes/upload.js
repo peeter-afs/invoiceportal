@@ -65,8 +65,9 @@ router.post('/', auth, upload.single('file'), async (req, res) => {
     );
 
     // Kick off async processing (do not await)
+    const session = req.session;
     setImmediate(() => {
-      processInvoice(invoiceId, buffer, originalFilename).catch((err) => {
+      processInvoice(invoiceId, buffer, originalFilename, session).catch((err) => {
         console.error(`processInvoice failed for ${invoiceId}:`, err.message);
       });
     });
