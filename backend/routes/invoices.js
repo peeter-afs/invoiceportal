@@ -3,7 +3,7 @@ const router = express.Router();
 const crypto = require('crypto');
 const { getPool, query } = require('../db');
 const { auth, requireRole } = require('../middleware/auth');
-const { readFile, fileExists } = require('../services/fileService');
+const { readFile, fileExists, getPresignedUrl } = require('../services/fileService');
 const {
   submitForApproval,
   approve,
@@ -396,10 +396,16 @@ router.get('/:id/file', auth, async (req, res) => {
       return res.status(404).json({ error: 'File not found' });
     }
     const file = files[0];
-    if (!fileExists(file.storage_key)) {
+    if (!await fileExists(file.storage_key)) {
       return res.status(404).json({ error: 'File not found on disk' });
     }
-    const buffer = readFile(file.storage_key);
+    // In S3/R2 mode: redirect to a short-lived presigned URL (no bandwidth through server)
+    const presignedUrl = await getPresignedUrl(file.storage_key);
+    if (presignedUrl) {
+      return res.redirect(302, presignedUrl);
+    }
+    // Local mode: stream the file directly
+    const buffer = await readFile(file.storage_key);
     res.setHeader('Content-Type', file.mime || 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${file.filename}"`);
     res.send(buffer);

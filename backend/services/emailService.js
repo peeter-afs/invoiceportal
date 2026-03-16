@@ -135,8 +135,8 @@ async function processEmail(message, tenantId, inboxId) {
     const invoiceId = crypto.randomUUID();
     const storageKey = getStorageKey(tenantId, invoiceId, filename);
 
-    // Save PDF to disk
-    saveFile(buffer, storageKey);
+    // Save PDF to storage (local disk or S3/R2)
+    await saveFile(buffer, storageKey);
 
     // Create invoice record
     await query(
