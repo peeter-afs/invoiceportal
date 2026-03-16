@@ -207,38 +207,7 @@ function InvoiceDetail() {
                 <h3>Supplier</h3>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                   <div>
-                    <strong>Name:</strong><br />
-                    {editingSupplier ? (
-                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.25rem' }}>
-                        <select
-                          value={selectedSupplierId}
-                          onChange={(e) => setSelectedSupplierId(e.target.value)}
-                          style={{ flex: 1, padding: '0.35rem' }}
-                        >
-                          <option value="">— unlinked —</option>
-                          {suppliers.map((s) => (
-                            <option key={s.id} value={s.id}>{s.name}</option>
-                          ))}
-                        </select>
-                        <button className="btn btn-primary" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={handleSaveSupplier}>Save</button>
-                        <button className="btn" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={() => setEditingSupplier(false)}>Cancel</button>
-                      </div>
-                    ) : (
-                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                        {invoice.supplierId ? (
-                          <Link to={`/suppliers/${invoice.supplierId}`}>{invoice.supplierName || '-'}</Link>
-                        ) : (
-                          <span style={{ color: invoice.supplierName ? 'inherit' : '#999' }}>{invoice.supplierName || 'unlinked'}</span>
-                        )}
-                        <button
-                          className="btn"
-                          style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem', backgroundColor: '#ecf0f1', color: '#333' }}
-                          onClick={() => { setSelectedSupplierId(invoice.supplierId || ''); setEditingSupplier(true); }}
-                        >
-                          Change
-                        </button>
-                      </div>
-                    )}
+                    <strong>Name:</strong><br />{invoice.supplierName || '-'}
                   </div>
                   <div>
                     <strong>Address:</strong><br />{invoice.supplierAddress || '-'}
@@ -253,41 +222,94 @@ function InvoiceDetail() {
                       <strong>VAT Number:</strong><br />{invoice.supplierVatNumber}
                     </div>
                   )}
-                  {invoice.supplierId && (
+                  {invoice.supplierBankAccount && (
                     <div>
-                      <strong>Futursoft #:</strong><br />
+                      <strong>Bank Account:</strong><br />{invoice.supplierBankAccount}
+                    </div>
+                  )}
+                </div>
+
+                {/* Supplier Registry Link */}
+                <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid #eee' }}>
+                  {editingSupplier ? (
+                    <div>
+                      <strong>Link to supplier registry:</strong>
+                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.5rem' }}>
+                        <select
+                          value={selectedSupplierId}
+                          onChange={(e) => setSelectedSupplierId(e.target.value)}
+                          style={{ flex: 1, maxWidth: '350px', padding: '0.4rem' }}
+                        >
+                          <option value="">— none (unlinked) —</option>
+                          {suppliers.map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.name}{s.futursoftSupplierNr ? ` (FS# ${s.futursoftSupplierNr})` : ''}
+                            </option>
+                          ))}
+                        </select>
+                        <button className="btn btn-primary" style={{ fontSize: '0.85rem', padding: '0.35rem 0.75rem' }} onClick={handleSaveSupplier}>Save</button>
+                        <button className="btn" style={{ fontSize: '0.85rem', padding: '0.35rem 0.75rem' }} onClick={() => setEditingSupplier(false)}>Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                      {invoice.supplierId ? (
+                        <>
+                          <span>
+                            <strong>Linked:</strong>{' '}
+                            <Link to={`/suppliers/${invoice.supplierId}`}>{invoice.supplierName}</Link>
+                          </span>
+                          {invoice.futursoftSupplierNr && (
+                            <span style={{ color: '#666' }}>
+                              FS# {invoice.futursoftSupplierNr}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span style={{ color: '#e67e22' }}>
+                          Not linked to supplier registry
+                        </span>
+                      )}
+                      <button
+                        className="btn"
+                        style={{ fontSize: '0.8rem', padding: '0.25rem 0.6rem', backgroundColor: '#ecf0f1', color: '#333' }}
+                        onClick={() => { setSelectedSupplierId(invoice.supplierId || ''); setEditingSupplier(true); }}
+                      >
+                        {invoice.supplierId ? 'Change' : 'Link Supplier'}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Futursoft Supplier Nr — inline edit when linked */}
+                  {invoice.supplierId && (
+                    <div style={{ marginTop: '0.5rem' }}>
                       {editingFsNr ? (
-                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.25rem' }}>
+                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                          <strong>Futursoft #:</strong>
                           <input
                             type="text"
                             value={fsNrValue}
                             onChange={(e) => setFsNrValue(e.target.value)}
-                            placeholder="Supplier nr..."
-                            style={{ width: '120px', padding: '0.3rem' }}
-                            onKeyDown={(e) => { if (e.key === 'Enter') handleSaveFsNr(); }}
+                            placeholder="Enter supplier nr..."
+                            style={{ width: '140px', padding: '0.35rem' }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') handleSaveFsNr(); if (e.key === 'Escape') setEditingFsNr(false); }}
+                            autoFocus
                           />
                           <button className="btn btn-primary" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={handleSaveFsNr}>Save</button>
                           <button className="btn" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={() => setEditingFsNr(false)}>Cancel</button>
                         </div>
-                      ) : (
+                      ) : !invoice.futursoftSupplierNr ? (
                         <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                          <span style={{ color: invoice.futursoftSupplierNr ? 'inherit' : '#999' }}>
-                            {invoice.futursoftSupplierNr || 'not found'}
-                          </span>
+                          <span style={{ color: '#999', fontSize: '0.9em' }}>Futursoft # not resolved</span>
                           <button
                             className="btn"
-                            style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem', backgroundColor: '#ecf0f1', color: '#333' }}
-                            onClick={() => { setFsNrValue(invoice.futursoftSupplierNr || ''); setEditingFsNr(true); }}
+                            style={{ fontSize: '0.8rem', padding: '0.25rem 0.6rem', backgroundColor: '#ecf0f1', color: '#333' }}
+                            onClick={() => { setFsNrValue(''); setEditingFsNr(true); }}
                           >
-                            Edit
+                            Enter manually
                           </button>
                         </div>
-                      )}
-                    </div>
-                  )}
-                  {invoice.supplierBankAccount && (
-                    <div>
-                      <strong>Bank Account:</strong><br />{invoice.supplierBankAccount}
+                      ) : null}
                     </div>
                   )}
                 </div>
