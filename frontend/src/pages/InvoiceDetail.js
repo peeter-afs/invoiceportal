@@ -344,7 +344,22 @@ function InvoiceDetail() {
                     <Link to={`/invoices/${id}/matching`} className="btn btn-primary">
                       Row Matching
                     </Link>
-                    {invoice.purchaseOrderNr && (
+                    {invoice.workflowConfig?.orderProposal && (
+                      <Link to={`/invoices/${id}/matching`} className="btn" style={{ backgroundColor: '#2980b9', color: 'white' }}>
+                        Order Proposal
+                      </Link>
+                    )}
+                    {invoice.workflowConfig?.orderConfirmation && (
+                      <button className="btn" style={{ backgroundColor: '#f39c12', color: 'white' }} disabled>
+                        Order Confirmation
+                      </button>
+                    )}
+                    {invoice.workflowConfig?.order && (
+                      <button className="btn" style={{ backgroundColor: '#e67e22', color: 'white' }} disabled>
+                        Order
+                      </button>
+                    )}
+                    {invoice.workflowConfig?.receiving && invoice.purchaseOrderNr && (
                       <Link to={`/invoices/${id}/receiving`} className="btn" style={{ backgroundColor: '#27ae60', color: 'white' }}>
                         Receiving Preview
                       </Link>

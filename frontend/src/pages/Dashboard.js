@@ -50,7 +50,10 @@ function Dashboard() {
           <Link to="/invoices">Invoices</Link>
           <Link to="/invoices/upload">Upload Invoice</Link>
           {user?.role === 'tenant_admin' && (
-            <Link to="/settings/email">Email Settings</Link>
+            <>
+              <Link to="/settings/workflow">Workflow Settings</Link>
+              <Link to="/settings/email">Email Settings</Link>
+            </>
           )}
           <button className="btn btn-danger" onClick={logout}>
             Logout

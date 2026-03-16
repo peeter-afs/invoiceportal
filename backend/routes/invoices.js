@@ -14,6 +14,7 @@ const { matchInvoice, getMatchResults, overrideMatch } = require('../services/ma
 const { fetchPurchaseOrder, createPurchaseOrderFromInvoice } = require('../services/purchaseOrderService');
 const { getReceivingPreview, postReceiving } = require('../services/receivingService');
 const { getConsolidationState, applyConsolidationActions } = require('../services/consolidationService');
+const { getTenantSettings } = require('../services/tenantService');
 
 function normalizeInvoice(row, lines = []) {
   if (!row) return null;
@@ -125,13 +126,23 @@ router.get('/:id', auth, async (req, res) => {
       return res.status(404).json({ error: 'Invoice not found' });
     }
 
-    const lines = await query(
-      `SELECT id, invoice_id, row_no, product_code, description, qty, unit,
-              unit_price, net, vat_rate, vat_amount, gross, match_data
-       FROM invoice_lines WHERE invoice_id = ? ORDER BY row_no ASC`,
-      [invoice.id]
-    );
-    res.json(normalizeInvoice(invoice, lines));
+    const [lines, settings] = await Promise.all([
+      query(
+        `SELECT id, invoice_id, row_no, product_code, description, qty, unit,
+                unit_price, net, vat_rate, vat_amount, gross, match_data
+         FROM invoice_lines WHERE invoice_id = ? ORDER BY row_no ASC`,
+        [invoice.id]
+      ),
+      getTenantSettings(req.tenantId),
+    ]);
+    const result = normalizeInvoice(invoice, lines);
+    result.workflowConfig = {
+      orderProposal: !!(settings && settings.wf_order_proposal_enabled),
+      orderConfirmation: !!(settings && settings.wf_order_confirmation_enabled),
+      order: !!(settings && settings.wf_order_enabled),
+      receiving: !!(settings && settings.wf_receiving_enabled),
+    };
+    res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

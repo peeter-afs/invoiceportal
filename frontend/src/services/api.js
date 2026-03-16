@@ -84,6 +84,12 @@ export const userAPI = {
   setStatus: (userId, status) => api.put(`/users/${userId}/status`, { status }),
 };
 
+// Settings API (admin only)
+export const settingsAPI = {
+  get: () => api.get('/settings'),
+  update: (data) => api.put('/settings', data),
+};
+
 // Email Inbox API (admin only)
 export const emailAPI = {
   getInbox: () => api.get('/email/inbox'),

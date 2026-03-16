@@ -11,6 +11,7 @@ import InvoiceMatchReview from './pages/InvoiceMatchReview';
 import ReceivingPreview from './pages/ReceivingPreview';
 import ConsolidationReview from './pages/ConsolidationReview';
 import EmailInboxSettings from './pages/EmailInboxSettings';
+import WorkflowSettings from './pages/WorkflowSettings';
 import './App.css';
 
 // Extract tenant key from URL: /acme-corp/login → tenantKey="acme-corp"
@@ -55,6 +56,7 @@ function App() {
             <Route path="/invoices/:id/receiving" element={<PrivateRoute><ReceivingPreview /></PrivateRoute>} />
             <Route path="/invoices/:id/consolidation" element={<PrivateRoute><ConsolidationReview /></PrivateRoute>} />
             <Route path="/settings/email" element={<PrivateRoute><EmailInboxSettings /></PrivateRoute>} />
+            <Route path="/settings/workflow" element={<PrivateRoute><WorkflowSettings /></PrivateRoute>} />
             <Route path="/" element={<Navigate to="/login" />} />
             <Route path="*" element={<Navigate to="/login" />} />
           </Routes>

@@ -51,6 +51,10 @@ CREATE TABLE tenant_settings (
   futursoft_base_url VARCHAR(255) NULL,
   futursoft_subscription_key VARCHAR(255) NULL,
   futursoft_ws_base_url VARCHAR(255) NULL,
+  wf_order_proposal_enabled TINYINT(1) NOT NULL DEFAULT 0,
+  wf_order_confirmation_enabled TINYINT(1) NOT NULL DEFAULT 0,
+  wf_order_enabled TINYINT(1) NOT NULL DEFAULT 0,
+  wf_receiving_enabled TINYINT(1) NOT NULL DEFAULT 0,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (tenant_id),
@@ -320,4 +324,5 @@ INSERT INTO schema_migrations (name) VALUES
   ('001_baseline.sql'),
   ('002_target_schema.sql'),
   ('003_drop_credentials.sql'),
-  ('004_email_inboxes.sql');
+  ('004_email_inboxes.sql'),
+  ('005_workflow_steps.sql');
