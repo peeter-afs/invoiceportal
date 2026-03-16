@@ -2,67 +2,108 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const { getPool, query } = require('../db');
-const { auth } = require('../middleware/auth');
+const { auth, requireRole } = require('../middleware/auth');
+const {
+  submitForApproval,
+  approve,
+  reject,
+  getApprovalHistory,
+} = require('../services/approvalService');
+const { matchInvoice, getMatchResults, overrideMatch } = require('../services/matchingService');
+const { fetchPurchaseOrder, createPurchaseOrderFromInvoice } = require('../services/purchaseOrderService');
+const { getReceivingPreview, postReceiving } = require('../services/receivingService');
+const { getConsolidationState, applyConsolidationActions } = require('../services/consolidationService');
 
-function normalizeInvoice(invoiceRow, items = []) {
-  if (!invoiceRow) return null;
+function normalizeInvoice(row, lines = []) {
+  if (!row) return null;
   return {
-    _id: invoiceRow.id,
-    invoiceNumber: invoiceRow.invoice_number,
-    clientName: invoiceRow.client_name,
-    clientEmail: invoiceRow.client_email,
-    clientAddress: invoiceRow.client_address,
-    items: items.map((it) => ({
-      description: it.description,
-      quantity: Number(it.quantity),
-      unitPrice: Number(it.unit_price),
-      amount: Number(it.amount),
+    _id: row.id,
+    status: row.status,
+    sourceType: row.source_type,
+    supplierName: row.supplier_name,
+    supplierAddress: row.supplier_address,
+    supplierRegNumber: row.supplier_reg_number,
+    supplierVatNumber: row.supplier_vat_number,
+    supplierBankAccount: row.supplier_bank_account,
+    invoiceNumber: row.invoice_number,
+    invoiceDate: row.invoice_date,
+    dueDate: row.due_date,
+    currency: row.currency,
+    netTotal: row.net_total != null ? Number(row.net_total) : null,
+    vatTotal: row.vat_total != null ? Number(row.vat_total) : null,
+    grossTotal: row.gross_total != null ? Number(row.gross_total) : null,
+    purchaseOrderNr: row.purchase_order_nr,
+    referenceNumber: row.reference_number,
+    penaltyRate: row.penalty_rate,
+    paymentTerms: row.payment_terms,
+    deliveryDate: row.delivery_date,
+    deliveryMethod: row.delivery_method,
+    deliveryNoteNr: row.delivery_note_nr,
+    buyerReference: row.buyer_reference,
+    sellerReference: row.seller_reference,
+    requiresApproval: row.requires_approval,
+    approvalStatus: row.approval_status,
+    originalFilename: row.original_filename,
+    errorMessage: row.error_message,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    lines: lines.map((l) => ({
+      id: l.id,
+      rowNo: l.row_no,
+      productCode: l.product_code,
+      description: l.description,
+      qty: l.qty != null ? Number(l.qty) : null,
+      unit: l.unit,
+      unitPrice: l.unit_price != null ? Number(l.unit_price) : null,
+      net: l.net != null ? Number(l.net) : null,
+      vatRate: l.vat_rate != null ? Number(l.vat_rate) : null,
+      vatAmount: l.vat_amount != null ? Number(l.vat_amount) : null,
+      gross: l.gross != null ? Number(l.gross) : null,
+      matchData: l.match_data ? JSON.parse(l.match_data) : null,
     })),
-    subtotal: Number(invoiceRow.subtotal),
-    tax: Number(invoiceRow.tax),
-    total: Number(invoiceRow.total),
-    status: invoiceRow.status,
-    dueDate: invoiceRow.due_date,
-    issueDate: invoiceRow.issue_date,
-    notes: invoiceRow.notes,
-    createdBy: invoiceRow.created_by,
-    createdAt: invoiceRow.created_at,
-    updatedAt: invoiceRow.updated_at,
   };
 }
 
-async function fetchInvoiceItems(invoiceIds) {
+const INVOICE_COLUMNS = `id, tenant_id, status, source_type, supplier_name, supplier_address,
+  supplier_reg_number, supplier_vat_number, supplier_bank_account,
+  invoice_number, invoice_date, due_date, currency, net_total, vat_total, gross_total,
+  purchase_order_nr, reference_number, penalty_rate, payment_terms,
+  delivery_date, delivery_method, delivery_note_nr, buyer_reference, seller_reference,
+  requires_approval, approval_status, original_filename,
+  error_message, created_by, created_at, updated_at`;
+
+async function fetchInvoiceLines(invoiceIds) {
   if (!invoiceIds || invoiceIds.length === 0) return [];
   const placeholders = invoiceIds.map(() => '?').join(',');
   return await query(
-    `SELECT invoice_id, description, quantity, unit_price, amount
-     FROM invoice_items
+    `SELECT id, invoice_id, row_no, product_code, description, qty, unit,
+            unit_price, net, vat_rate, vat_amount, gross, match_data
+     FROM invoice_lines
      WHERE invoice_id IN (${placeholders})
-     ORDER BY created_at ASC`,
+     ORDER BY row_no ASC`,
     invoiceIds
   );
 }
 
-// Get all invoices for the authenticated user
+// Get all invoices for the tenant
 router.get('/', auth, async (req, res) => {
   try {
     const invoices = await query(
-      `SELECT id, invoice_number, client_name, client_email, client_address,
-              subtotal, tax, total, status, due_date, issue_date, notes,
-              created_by, tenant_id, created_at, updated_at
+      `SELECT ${INVOICE_COLUMNS}
        FROM invoices
-       WHERE created_by = ? AND tenant_id = ?
+       WHERE tenant_id = ?
        ORDER BY created_at DESC`,
-      [req.userId, req.tenantId]
+      [req.tenantId]
     );
 
-    const items = await fetchInvoiceItems(invoices.map((inv) => inv.id));
-    const itemsByInvoiceId = items.reduce((acc, item) => {
-      (acc[item.invoice_id] ||= []).push(item);
+    const lines = await fetchInvoiceLines(invoices.map((inv) => inv.id));
+    const linesByInvoice = lines.reduce((acc, line) => {
+      (acc[line.invoice_id] ||= []).push(line);
       return acc;
     }, {});
 
-    res.json(invoices.map((inv) => normalizeInvoice(inv, itemsByInvoiceId[inv.id] || [])));
+    res.json(invoices.map((inv) => normalizeInvoice(inv, linesByInvoice[inv.id] || [])));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -72,52 +113,44 @@ router.get('/', auth, async (req, res) => {
 router.get('/:id', auth, async (req, res) => {
   try {
     const invoices = await query(
-      `SELECT id, invoice_number, client_name, client_email, client_address,
-              subtotal, tax, total, status, due_date, issue_date, notes,
-              created_by, tenant_id, created_at, updated_at
+      `SELECT ${INVOICE_COLUMNS}
        FROM invoices
-       WHERE id = ? AND created_by = ? AND tenant_id = ?
+       WHERE id = ? AND tenant_id = ?
        LIMIT 1`,
-      [req.params.id, req.userId, req.tenantId]
+      [req.params.id, req.tenantId]
     );
     const invoice = invoices[0];
     if (!invoice) {
       return res.status(404).json({ error: 'Invoice not found' });
     }
 
-    const items = await query(
-      'SELECT invoice_id, description, quantity, unit_price, amount FROM invoice_items WHERE invoice_id = ? ORDER BY created_at ASC',
+    const lines = await query(
+      `SELECT id, invoice_id, row_no, product_code, description, qty, unit,
+              unit_price, net, vat_rate, vat_amount, gross, match_data
+       FROM invoice_lines WHERE invoice_id = ? ORDER BY row_no ASC`,
       [invoice.id]
     );
-    res.json(normalizeInvoice(invoice, items));
+    res.json(normalizeInvoice(invoice, lines));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Create a new invoice
+// Create a new invoice (manual entry)
 router.post('/', auth, async (req, res) => {
   try {
     const {
+      supplierName,
       invoiceNumber,
-      clientName,
-      clientEmail,
-      clientAddress,
-      items,
-      subtotal,
-      tax,
-      total,
-      status,
+      invoiceDate,
       dueDate,
-      issueDate,
-      notes,
+      currency,
+      lines,
+      purchaseOrderNr,
     } = req.body;
 
-    if (!invoiceNumber || !clientName || !clientEmail || !dueDate) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: 'Invoice must have at least one item' });
+    if (!supplierName || !invoiceNumber) {
+      return res.status(400).json({ error: 'Supplier name and invoice number are required' });
     }
 
     const pool = getPool();
@@ -126,66 +159,68 @@ router.post('/', auth, async (req, res) => {
       await conn.beginTransaction();
 
       const invoiceId = crypto.randomUUID();
+
+      // Calculate totals from lines
+      let netTotal = 0;
+      let vatTotal = 0;
+      let grossTotal = 0;
+      if (Array.isArray(lines)) {
+        for (const line of lines) {
+          netTotal += Number(line.net || 0);
+          vatTotal += Number(line.vatAmount || 0);
+          grossTotal += Number(line.gross || line.net || 0);
+        }
+      }
+
       await conn.execute(
         `INSERT INTO invoices (
-           id, tenant_id, invoice_number, client_name, client_email, client_address,
-           subtotal, tax, total, status, due_date, issue_date, notes, created_by
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           id, tenant_id, status, source_type, supplier_name, invoice_number,
+           invoice_date, due_date, currency, net_total, vat_total, gross_total,
+           purchase_order_nr, created_by
+         ) VALUES (?, ?, 'needs_review', 'upload', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          invoiceId,
-          req.tenantId,
-          invoiceNumber,
-          clientName,
-          clientEmail,
-          clientAddress || null,
-          subtotal ?? 0,
-          tax ?? 0,
-          total ?? 0,
-          status || 'draft',
-          dueDate,
-          issueDate || new Date(),
-          notes || null,
-          req.userId,
+          invoiceId, req.tenantId, supplierName, invoiceNumber,
+          invoiceDate || null, dueDate || null, currency || 'EUR',
+          netTotal, vatTotal, grossTotal,
+          purchaseOrderNr || null, req.userId,
         ]
       );
 
-      for (const item of items) {
-        await conn.execute(
-          `INSERT INTO invoice_items (
-             id, invoice_id, description, quantity, unit_price, amount
-           ) VALUES (?, ?, ?, ?, ?, ?)`,
-          [
-            crypto.randomUUID(),
-            invoiceId,
-            item.description,
-            item.quantity,
-            item.unitPrice,
-            item.amount,
-          ]
-        );
+      if (Array.isArray(lines)) {
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          await conn.execute(
+            `INSERT INTO invoice_lines (
+               id, invoice_id, row_no, product_code, description, qty, unit,
+               unit_price, net, vat_rate, vat_amount, gross
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              crypto.randomUUID(), invoiceId, i + 1,
+              line.productCode || null, line.description || null,
+              line.qty || null, line.unit || null, line.unitPrice || null,
+              line.net || null, line.vatRate || null, line.vatAmount || null,
+              line.gross || null,
+            ]
+          );
+        }
       }
 
       await conn.commit();
 
-      const createdInvoices = await query(
-        `SELECT id, invoice_number, client_name, client_email, client_address,
-                subtotal, tax, total, status, due_date, issue_date, notes,
-                created_by, tenant_id, created_at, updated_at
-         FROM invoices WHERE id = ? AND tenant_id = ? LIMIT 1`,
-        [invoiceId, req.tenantId]
+      const created = await query(
+        `SELECT ${INVOICE_COLUMNS} FROM invoices WHERE id = ? LIMIT 1`,
+        [invoiceId]
       );
-      const createdItems = await query(
-        'SELECT invoice_id, description, quantity, unit_price, amount FROM invoice_items WHERE invoice_id = ? ORDER BY created_at ASC',
+      const createdLines = await query(
+        `SELECT id, invoice_id, row_no, product_code, description, qty, unit,
+                unit_price, net, vat_rate, vat_amount, gross, match_data
+         FROM invoice_lines WHERE invoice_id = ? ORDER BY row_no ASC`,
         [invoiceId]
       );
 
-      res.status(201).json(normalizeInvoice(createdInvoices[0], createdItems));
+      res.status(201).json(normalizeInvoice(created[0], createdLines));
     } catch (error) {
-      try {
-        await conn.rollback();
-      } catch {
-        // ignore rollback errors
-      }
+      try { await conn.rollback(); } catch { /* ignore */ }
       throw error;
     } finally {
       conn.release();
@@ -201,8 +236,8 @@ router.put('/:id', auth, async (req, res) => {
     const invoiceId = req.params.id;
 
     const existing = await query(
-      'SELECT id FROM invoices WHERE id = ? AND created_by = ? AND tenant_id = ? LIMIT 1',
-      [invoiceId, req.userId, req.tenantId]
+      'SELECT id FROM invoices WHERE id = ? AND tenant_id = ? LIMIT 1',
+      [invoiceId, req.tenantId]
     );
     if (existing.length === 0) {
       return res.status(404).json({ error: 'Invoice not found' });
@@ -214,17 +249,27 @@ router.put('/:id', auth, async (req, res) => {
       await conn.beginTransaction();
 
       const updatable = [
+        ['supplierName', 'supplier_name'],
+        ['supplierAddress', 'supplier_address'],
+        ['supplierRegNumber', 'supplier_reg_number'],
+        ['supplierBankAccount', 'supplier_bank_account'],
         ['invoiceNumber', 'invoice_number'],
-        ['clientName', 'client_name'],
-        ['clientEmail', 'client_email'],
-        ['clientAddress', 'client_address'],
-        ['subtotal', 'subtotal'],
-        ['tax', 'tax'],
-        ['total', 'total'],
-        ['status', 'status'],
+        ['invoiceDate', 'invoice_date'],
         ['dueDate', 'due_date'],
-        ['issueDate', 'issue_date'],
-        ['notes', 'notes'],
+        ['currency', 'currency'],
+        ['netTotal', 'net_total'],
+        ['vatTotal', 'vat_total'],
+        ['grossTotal', 'gross_total'],
+        ['status', 'status'],
+        ['purchaseOrderNr', 'purchase_order_nr'],
+        ['referenceNumber', 'reference_number'],
+        ['penaltyRate', 'penalty_rate'],
+        ['paymentTerms', 'payment_terms'],
+        ['deliveryDate', 'delivery_date'],
+        ['deliveryMethod', 'delivery_method'],
+        ['deliveryNoteNr', 'delivery_note_nr'],
+        ['buyerReference', 'buyer_reference'],
+        ['sellerReference', 'seller_reference'],
       ];
 
       const sets = [];
@@ -237,63 +282,57 @@ router.put('/:id', auth, async (req, res) => {
       }
 
       if (sets.length > 0) {
-        params.push(invoiceId, req.userId, req.tenantId);
+        params.push(invoiceId, req.tenantId);
         await conn.execute(
-          `UPDATE invoices SET ${sets.join(', ')} WHERE id = ? AND created_by = ? AND tenant_id = ?`,
+          `UPDATE invoices SET ${sets.join(', ')} WHERE id = ? AND tenant_id = ?`,
           params
         );
       }
 
-      if (Object.prototype.hasOwnProperty.call(req.body, 'items')) {
-        if (!Array.isArray(req.body.items) || req.body.items.length === 0) {
-          throw new Error('Invoice must have at least one item');
-        }
-        await conn.execute('DELETE FROM invoice_items WHERE invoice_id = ?', [invoiceId]);
-        for (const item of req.body.items) {
-          await conn.execute(
-            `INSERT INTO invoice_items (
-               id, invoice_id, description, quantity, unit_price, amount
-             ) VALUES (?, ?, ?, ?, ?, ?)`,
-            [
-              crypto.randomUUID(),
-              invoiceId,
-              item.description,
-              item.quantity,
-              item.unitPrice,
-              item.amount,
-            ]
-          );
+      if (Object.prototype.hasOwnProperty.call(req.body, 'lines')) {
+        await conn.execute('DELETE FROM invoice_lines WHERE invoice_id = ?', [invoiceId]);
+        if (Array.isArray(req.body.lines)) {
+          for (let i = 0; i < req.body.lines.length; i++) {
+            const line = req.body.lines[i];
+            await conn.execute(
+              `INSERT INTO invoice_lines (
+                 id, invoice_id, row_no, product_code, description, qty, unit,
+                 unit_price, net, vat_rate, vat_amount, gross
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                crypto.randomUUID(), invoiceId, i + 1,
+                line.productCode || null, line.description || null,
+                line.qty || null, line.unit || null, line.unitPrice || null,
+                line.net || null, line.vatRate || null, line.vatAmount || null,
+                line.gross || null,
+              ]
+            );
+          }
         }
       }
 
       await conn.commit();
 
-      const invoices = await query(
-        `SELECT id, invoice_number, client_name, client_email, client_address,
-                subtotal, tax, total, status, due_date, issue_date, notes,
-                created_by, tenant_id, created_at, updated_at
-         FROM invoices WHERE id = ? AND created_by = ? AND tenant_id = ? LIMIT 1`,
-        [invoiceId, req.userId, req.tenantId]
+      const updated = await query(
+        `SELECT ${INVOICE_COLUMNS} FROM invoices WHERE id = ? LIMIT 1`,
+        [invoiceId]
       );
-      const items = await query(
-        'SELECT invoice_id, description, quantity, unit_price, amount FROM invoice_items WHERE invoice_id = ? ORDER BY created_at ASC',
+      const updatedLines = await query(
+        `SELECT id, invoice_id, row_no, product_code, description, qty, unit,
+                unit_price, net, vat_rate, vat_amount, gross, match_data
+         FROM invoice_lines WHERE invoice_id = ? ORDER BY row_no ASC`,
         [invoiceId]
       );
 
-      res.json(normalizeInvoice(invoices[0], items));
+      res.json(normalizeInvoice(updated[0], updatedLines));
     } catch (error) {
-      try {
-        await conn.rollback();
-      } catch {
-        // ignore rollback errors
-      }
+      try { await conn.rollback(); } catch { /* ignore */ }
       throw error;
     } finally {
       conn.release();
     }
   } catch (error) {
-    const status = error.message === 'Invoice must have at least one item' ? 400 : 500;
-    res.status(status).json({ error: error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -301,8 +340,8 @@ router.put('/:id', auth, async (req, res) => {
 router.delete('/:id', auth, async (req, res) => {
   try {
     const result = await query(
-      'DELETE FROM invoices WHERE id = ? AND created_by = ? AND tenant_id = ?',
-      [req.params.id, req.userId, req.tenantId]
+      'DELETE FROM invoices WHERE id = ? AND tenant_id = ?',
+      [req.params.id, req.tenantId]
     );
 
     if (!result || result.affectedRows === 0) {
@@ -312,6 +351,174 @@ router.delete('/:id', auth, async (req, res) => {
     res.json({ message: 'Invoice deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Get processing logs for an invoice
+router.get('/:id/logs', auth, async (req, res) => {
+  try {
+    const logs = await query(
+      `SELECT id, step, level, message, payload, created_at
+       FROM processing_logs
+       WHERE invoice_id = ?
+       ORDER BY created_at ASC`,
+      [req.params.id]
+    );
+    res.json(logs.map((l) => ({
+      ...l,
+      payload: l.payload ? JSON.parse(l.payload) : null,
+    })));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Submit invoice for approval (reviewer or admin)
+router.post('/:id/submit', auth, requireRole('reviewer', 'tenant_admin'), async (req, res) => {
+  try {
+    await submitForApproval(req.params.id, req.tenantId, req.userId, req.user.role);
+    res.json({ message: 'Invoice submitted for approval' });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Approve invoice (approver or admin)
+router.post('/:id/approve', auth, requireRole('approver', 'tenant_admin'), async (req, res) => {
+  try {
+    await approve(req.params.id, req.tenantId, req.userId, req.user.role, req.body.comment);
+    res.json({ message: 'Invoice approved' });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Reject invoice (approver or admin)
+router.post('/:id/reject', auth, requireRole('approver', 'tenant_admin'), async (req, res) => {
+  try {
+    if (!req.body.comment) {
+      return res.status(400).json({ error: 'Rejection reason is required' });
+    }
+    await reject(req.params.id, req.tenantId, req.userId, req.user.role, req.body.comment);
+    res.json({ message: 'Invoice rejected' });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Get approval history
+router.get('/:id/approvals', auth, async (req, res) => {
+  try {
+    const history = await getApprovalHistory(req.params.id);
+    res.json(history);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Matching ──
+
+// Trigger matching for an invoice
+router.post('/:id/match', auth, async (req, res) => {
+  try {
+    const results = await matchInvoice(req.params.id, req.session);
+    res.json(results);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Get match results
+router.get('/:id/matches', auth, async (req, res) => {
+  try {
+    const results = await getMatchResults(req.params.id);
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Override match for a line
+router.put('/:id/lines/:lineId/match', auth, async (req, res) => {
+  try {
+    const result = await overrideMatch(req.params.lineId, req.body);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Purchase Orders ──
+
+// Get PO details for an invoice
+router.get('/:id/purchase-order', auth, async (req, res) => {
+  try {
+    const data = await fetchPurchaseOrder(req.params.id, req.session);
+    res.json(data);
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message });
+  }
+});
+
+// Create a PO from invoice data
+router.post('/:id/purchase-order', auth, async (req, res) => {
+  try {
+    const po = await createPurchaseOrderFromInvoice(req.params.id, req.session);
+    res.status(201).json(po);
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message });
+  }
+});
+
+// ── Receiving ──
+
+// Get receiving preview
+router.get('/:id/receiving-preview', auth, async (req, res) => {
+  try {
+    const preview = await getReceivingPreview(req.params.id);
+    res.json(preview);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Post receiving
+router.post('/:id/receiving', auth, async (req, res) => {
+  try {
+    const { lines } = req.body;
+    if (!Array.isArray(lines) || lines.length === 0) {
+      return res.status(400).json({ error: 'Receiving lines are required' });
+    }
+    const result = await postReceiving(req.params.id, lines, req.session);
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message });
+  }
+});
+
+// ── Consolidation ──
+
+// Get consolidation state
+router.get('/:id/consolidation', auth, async (req, res) => {
+  try {
+    const state = await getConsolidationState(req.params.id, req.session);
+    res.json(state);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Apply consolidation actions
+router.post('/:id/consolidation/actions', auth, async (req, res) => {
+  try {
+    const { actions } = req.body;
+    if (!Array.isArray(actions) || actions.length === 0) {
+      return res.status(400).json({ error: 'Actions array is required' });
+    }
+    const result = await applyConsolidationActions(req.params.id, actions, req.session);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
