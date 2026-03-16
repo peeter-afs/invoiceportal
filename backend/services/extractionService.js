@@ -110,6 +110,47 @@ function correctExtractedMath(extracted) {
     }
   }
 
+  // Cross-check: if sum of line nets is much higher than netTotal, individual lines are likely wrong.
+  // Common cause: OpenAI concatenates adjacent columns (qty "1" + price "3,57" → qty=13, unitPrice=0.57)
+  // Fix: if net ≈ unitPrice for a line, the real qty is probably 1 (and the extracted qty was misread).
+  if (lines.length > 0 && extracted.netTotal != null) {
+    const linesSum = lines.reduce((s, l) => s + Number(l.net || 0), 0);
+    const headerNet = Number(extracted.netTotal);
+
+    if (linesSum > headerNet * 1.5 && headerNet > 0) {
+      // Lines total is way too high — try fixing individual lines
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const qty = line.qty != null ? Number(line.qty) : null;
+        const unitPrice = line.unitPrice != null ? Number(line.unitPrice) : null;
+        const net = line.net != null ? Number(line.net) : null;
+
+        if (qty != null && qty > 1 && unitPrice != null && net != null) {
+          // If unitPrice equals net, real qty is 1 (the extracted qty was garbage)
+          if (approxEqual(unitPrice, net)) {
+            corrections.push(`Line ${i + 1}: qty ${qty} → 1 (unitPrice ${unitPrice} = net ${net}, qty was misread)`);
+            line.qty = 1;
+            continue;
+          }
+          // If net / qty gives a cleaner unitPrice, recalculate
+          const realUnitPrice = net / qty;
+          // But also check: what if qty should be lower? Try qty=1 with net as the line total
+          if (unitPrice > net) {
+            // unitPrice shouldn't be larger than net when qty >= 1
+            corrections.push(`Line ${i + 1}: qty ${qty} → 1, unitPrice ${unitPrice} → ${net} (unitPrice > net, misread)`);
+            line.qty = 1;
+            line.unitPrice = net;
+          }
+        }
+      }
+      // Recalculate after fixes
+      const fixedSum = lines.reduce((s, l) => s + Number(l.net || 0), 0);
+      if (approxEqual(fixedSum, headerNet)) {
+        corrections.push(`Line sum fixed: ${linesSum.toFixed(2)} → ${fixedSum.toFixed(2)} (matches netTotal ${headerNet})`);
+      }
+    }
+  }
+
   // Recalculate header totals from lines if they don't match
   if (lines.length > 0) {
     const linesNetSum = lines.reduce((s, l) => s + Number(l.net || 0), 0);

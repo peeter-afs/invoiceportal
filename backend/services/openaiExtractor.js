@@ -128,11 +128,19 @@ CRITICAL NUMBER FORMAT RULES:
 - ALWAYS return numbers with DOT decimal in JSON (never comma)
 - Strip currency symbols (€, $) — return pure numbers
 
+COLUMN PARSING — CRITICAL:
+- Invoice tables have distinct columns. Read each column value SEPARATELY.
+- DO NOT concatenate values from adjacent columns. "1" in quantity column and "3,57" in price column means qty=1 and unitPrice=3.57, NOT qty=13 and unitPrice=0.57.
+- The "total" column at the end of each line is the MOST RELIABLE value — use it as ground truth for "net".
+- If the invoice has a "pos." or position column, those are supplier position numbers, NOT row sequential numbers.
+- Multi-order invoices may have "order no." header rows — these are NOT product lines, skip them.
+
 MATH CROSS-CHECKS — verify before returning:
-- Each line: qty × unitPrice should equal net (e.g. 2 × 120.00 = 240.00)
-- Sum of all line net values should equal netTotal
+- Each line: qty × unitPrice should equal net (the line total). If not, something was misread.
+- CRITICAL: Sum of all line "net" values MUST equal netTotal. If it doesn't, re-read the lines.
 - netTotal + vatTotal should equal grossTotal
 - vatAmount for a line = net × (vatRate / 100)
+- If a line has qty=1, then unitPrice MUST equal net.
 
 DATE FORMAT:
 - Estonian/Finnish dates are DD.MM.YYYY → convert to YYYY-MM-DD
