@@ -1,21 +1,21 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { invoiceAPI } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import './CreateInvoice.css';
 
-function CreateInvoice({ onLogout }) {
+function CreateInvoice() {
+  const { logout } = useAuth();
   const navigate = useNavigate();
   const [formData, setFormData] = useState({
     invoiceNumber: '',
-    clientName: '',
-    clientEmail: '',
-    clientAddress: '',
+    supplierName: '',
     dueDate: '',
-    status: 'draft',
-    notes: '',
+    currency: 'EUR',
+    purchaseOrderNr: '',
   });
-  const [items, setItems] = useState([
-    { description: '', quantity: 1, unitPrice: 0, amount: 0 },
+  const [lines, setLines] = useState([
+    { description: '', qty: 1, unitPrice: 0, net: 0, vatRate: 0, vatAmount: 0, gross: 0 },
   ]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -27,32 +27,39 @@ function CreateInvoice({ onLogout }) {
     });
   };
 
-  const handleItemChange = (index, field, value) => {
-    const newItems = [...items];
-    newItems[index][field] = value;
+  const handleLineChange = (index, field, value) => {
+    const newLines = [...lines];
+    newLines[index][field] = value;
 
-    if (field === 'quantity' || field === 'unitPrice') {
-      newItems[index].amount = newItems[index].quantity * newItems[index].unitPrice;
+    if (['qty', 'unitPrice', 'vatRate'].includes(field)) {
+      const qty = Number(newLines[index].qty) || 0;
+      const unitPrice = Number(newLines[index].unitPrice) || 0;
+      const vatRate = Number(newLines[index].vatRate) || 0;
+      const net = qty * unitPrice;
+      const vatAmount = net * (vatRate / 100);
+      newLines[index].net = net;
+      newLines[index].vatAmount = vatAmount;
+      newLines[index].gross = net + vatAmount;
     }
 
-    setItems(newItems);
+    setLines(newLines);
   };
 
-  const addItem = () => {
-    setItems([...items, { description: '', quantity: 1, unitPrice: 0, amount: 0 }]);
+  const addLine = () => {
+    setLines([...lines, { description: '', qty: 1, unitPrice: 0, net: 0, vatRate: 0, vatAmount: 0, gross: 0 }]);
   };
 
-  const removeItem = (index) => {
-    if (items.length > 1) {
-      setItems(items.filter((_, i) => i !== index));
+  const removeLine = (index) => {
+    if (lines.length > 1) {
+      setLines(lines.filter((_, i) => i !== index));
     }
   };
 
   const calculateTotals = () => {
-    const subtotal = items.reduce((sum, item) => sum + item.amount, 0);
-    const tax = subtotal * 0.1; // 10% tax
-    const total = subtotal + tax;
-    return { subtotal, tax, total };
+    const netTotal = lines.reduce((sum, l) => sum + (Number(l.net) || 0), 0);
+    const vatTotal = lines.reduce((sum, l) => sum + (Number(l.vatAmount) || 0), 0);
+    const grossTotal = lines.reduce((sum, l) => sum + (Number(l.gross) || 0), 0);
+    return { netTotal, vatTotal, grossTotal };
   };
 
   const handleSubmit = async (e) => {
@@ -61,17 +68,10 @@ function CreateInvoice({ onLogout }) {
     setLoading(true);
 
     try {
-      const { subtotal, tax, total } = calculateTotals();
-
-      const invoiceData = {
+      await invoiceAPI.create({
         ...formData,
-        items,
-        subtotal,
-        tax,
-        total,
-      };
-
-      await invoiceAPI.create(invoiceData);
+        lines,
+      });
       navigate('/invoices');
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to create invoice');
@@ -80,7 +80,7 @@ function CreateInvoice({ onLogout }) {
     }
   };
 
-  const { subtotal, tax, total } = calculateTotals();
+  const { netTotal, vatTotal, grossTotal } = calculateTotals();
 
   return (
     <div>
@@ -90,7 +90,7 @@ function CreateInvoice({ onLogout }) {
           <Link to="/dashboard">Dashboard</Link>
           <Link to="/invoices">Invoices</Link>
           <Link to="/invoices/create">Create Invoice</Link>
-          <button className="btn btn-danger" onClick={onLogout}>
+          <button className="btn btn-danger" onClick={logout}>
             Logout
           </button>
         </div>
@@ -122,84 +122,70 @@ function CreateInvoice({ onLogout }) {
                   name="dueDate"
                   value={formData.dueDate}
                   onChange={handleChange}
-                  required
                 />
               </div>
               <div className="form-group">
-                <label htmlFor="status">Status</label>
-                <select
-                  id="status"
-                  name="status"
-                  value={formData.status}
+                <label htmlFor="currency">Currency</label>
+                <input
+                  type="text"
+                  id="currency"
+                  name="currency"
+                  value={formData.currency}
                   onChange={handleChange}
-                >
-                  <option value="draft">Draft</option>
-                  <option value="sent">Sent</option>
-                  <option value="paid">Paid</option>
-                  <option value="overdue">Overdue</option>
-                  <option value="cancelled">Cancelled</option>
-                </select>
+                  maxLength={8}
+                />
               </div>
             </div>
           </div>
 
           <div className="card">
-            <h3>Client Information</h3>
+            <h3>Supplier Information</h3>
             <div className="form-group">
-              <label htmlFor="clientName">Client Name</label>
+              <label htmlFor="supplierName">Supplier Name</label>
               <input
                 type="text"
-                id="clientName"
-                name="clientName"
-                value={formData.clientName}
+                id="supplierName"
+                name="supplierName"
+                value={formData.supplierName}
                 onChange={handleChange}
                 required
               />
             </div>
             <div className="form-group">
-              <label htmlFor="clientEmail">Client Email</label>
+              <label htmlFor="purchaseOrderNr">Purchase Order Number (optional)</label>
               <input
-                type="email"
-                id="clientEmail"
-                name="clientEmail"
-                value={formData.clientEmail}
+                type="text"
+                id="purchaseOrderNr"
+                name="purchaseOrderNr"
+                value={formData.purchaseOrderNr}
                 onChange={handleChange}
-                required
-              />
-            </div>
-            <div className="form-group">
-              <label htmlFor="clientAddress">Client Address</label>
-              <textarea
-                id="clientAddress"
-                name="clientAddress"
-                value={formData.clientAddress}
-                onChange={handleChange}
-                rows="3"
+                placeholder="e.g. PO-001"
               />
             </div>
           </div>
 
           <div className="card">
-            <h3>Invoice Items</h3>
-            {items.map((item, index) => (
+            <h3>Invoice Lines</h3>
+            {lines.map((line, index) => (
               <div key={index} className="invoice-item">
                 <div className="form-row">
                   <div className="form-group" style={{ flex: 2 }}>
                     <label>Description</label>
                     <input
                       type="text"
-                      value={item.description}
-                      onChange={(e) => handleItemChange(index, 'description', e.target.value)}
+                      value={line.description}
+                      onChange={(e) => handleLineChange(index, 'description', e.target.value)}
                       required
                     />
                   </div>
                   <div className="form-group">
-                    <label>Quantity</label>
+                    <label>Qty</label>
                     <input
                       type="number"
                       min="0"
-                      value={item.quantity}
-                      onChange={(e) => handleItemChange(index, 'quantity', parseFloat(e.target.value) || 0)}
+                      step="0.001"
+                      value={line.qty}
+                      onChange={(e) => handleLineChange(index, 'qty', parseFloat(e.target.value) || 0)}
                       required
                     />
                   </div>
@@ -209,25 +195,35 @@ function CreateInvoice({ onLogout }) {
                       type="number"
                       min="0"
                       step="0.01"
-                      value={item.unitPrice}
-                      onChange={(e) => handleItemChange(index, 'unitPrice', parseFloat(e.target.value) || 0)}
+                      value={line.unitPrice}
+                      onChange={(e) => handleLineChange(index, 'unitPrice', parseFloat(e.target.value) || 0)}
                       required
                     />
                   </div>
                   <div className="form-group">
-                    <label>Amount</label>
+                    <label>VAT %</label>
                     <input
                       type="number"
-                      value={item.amount.toFixed(2)}
-                      readOnly
+                      min="0"
+                      step="0.1"
+                      value={line.vatRate}
+                      onChange={(e) => handleLineChange(index, 'vatRate', parseFloat(e.target.value) || 0)}
                     />
+                  </div>
+                  <div className="form-group">
+                    <label>Net</label>
+                    <input type="number" value={line.net.toFixed(2)} readOnly />
+                  </div>
+                  <div className="form-group">
+                    <label>Gross</label>
+                    <input type="number" value={line.gross.toFixed(2)} readOnly />
                   </div>
                   <div className="form-group" style={{ display: 'flex', alignItems: 'flex-end' }}>
                     <button
                       type="button"
                       className="btn btn-danger"
-                      onClick={() => removeItem(index)}
-                      disabled={items.length === 1}
+                      onClick={() => removeLine(index)}
+                      disabled={lines.length === 1}
                     >
                       Remove
                     </button>
@@ -235,8 +231,8 @@ function CreateInvoice({ onLogout }) {
                 </div>
               </div>
             ))}
-            <button type="button" className="btn btn-success" onClick={addItem}>
-              Add Item
+            <button type="button" className="btn btn-success" onClick={addLine}>
+              Add Line
             </button>
           </div>
 
@@ -244,31 +240,17 @@ function CreateInvoice({ onLogout }) {
             <h3>Totals</h3>
             <div className="totals">
               <div className="total-row">
-                <span>Subtotal:</span>
-                <span>${subtotal.toFixed(2)}</span>
+                <span>Net Total:</span>
+                <span>{netTotal.toFixed(2)}</span>
               </div>
               <div className="total-row">
-                <span>Tax (10%):</span>
-                <span>${tax.toFixed(2)}</span>
+                <span>VAT Total:</span>
+                <span>{vatTotal.toFixed(2)}</span>
               </div>
               <div className="total-row total-final">
-                <span>Total:</span>
-                <span>${total.toFixed(2)}</span>
+                <span>Gross Total:</span>
+                <span>{grossTotal.toFixed(2)}</span>
               </div>
-            </div>
-          </div>
-
-          <div className="card">
-            <div className="form-group">
-              <label htmlFor="notes">Notes</label>
-              <textarea
-                id="notes"
-                name="notes"
-                value={formData.notes}
-                onChange={handleChange}
-                rows="4"
-                placeholder="Additional notes or payment terms..."
-              />
             </div>
           </div>
 

@@ -1,15 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { invoiceAPI } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import './Dashboard.css';
 
-function Dashboard({ onLogout }) {
+function Dashboard() {
+  const { logout, user } = useAuth();
   const [stats, setStats] = useState({
     total: 0,
-    draft: 0,
-    sent: 0,
-    paid: 0,
-    overdue: 0,
+    needsReview: 0,
+    pendingApproval: 0,
+    approved: 0,
+    exported: 0,
   });
   const [recentInvoices, setRecentInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -23,15 +25,14 @@ function Dashboard({ onLogout }) {
       const response = await invoiceAPI.getAll();
       const invoices = response.data;
 
-      const stats = {
+      setStats({
         total: invoices.length,
-        draft: invoices.filter((inv) => inv.status === 'draft').length,
-        sent: invoices.filter((inv) => inv.status === 'sent').length,
-        paid: invoices.filter((inv) => inv.status === 'paid').length,
-        overdue: invoices.filter((inv) => inv.status === 'overdue').length,
-      };
+        needsReview: invoices.filter((inv) => inv.status === 'needs_review').length,
+        pendingApproval: invoices.filter((inv) => inv.status === 'pending_approval').length,
+        approved: invoices.filter((inv) => inv.status === 'approved').length,
+        exported: invoices.filter((inv) => inv.status === 'exported').length,
+      });
 
-      setStats(stats);
       setRecentInvoices(invoices.slice(0, 5));
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
@@ -47,8 +48,11 @@ function Dashboard({ onLogout }) {
         <div>
           <Link to="/dashboard">Dashboard</Link>
           <Link to="/invoices">Invoices</Link>
-          <Link to="/invoices/create">Create Invoice</Link>
-          <button className="btn btn-danger" onClick={onLogout}>
+          <Link to="/invoices/upload">Upload Invoice</Link>
+          {user?.role === 'tenant_admin' && (
+            <Link to="/settings/email">Email Settings</Link>
+          )}
+          <button className="btn btn-danger" onClick={logout}>
             Logout
           </button>
         </div>
@@ -67,33 +71,33 @@ function Dashboard({ onLogout }) {
                 <p className="stat-value">{stats.total}</p>
               </div>
               <div className="stat-card">
-                <h3>Draft</h3>
-                <p className="stat-value">{stats.draft}</p>
+                <h3>Needs Review</h3>
+                <p className="stat-value">{stats.needsReview}</p>
               </div>
               <div className="stat-card">
-                <h3>Sent</h3>
-                <p className="stat-value">{stats.sent}</p>
+                <h3>Pending Approval</h3>
+                <p className="stat-value">{stats.pendingApproval}</p>
               </div>
               <div className="stat-card">
-                <h3>Paid</h3>
-                <p className="stat-value">{stats.paid}</p>
+                <h3>Approved</h3>
+                <p className="stat-value">{stats.approved}</p>
               </div>
               <div className="stat-card">
-                <h3>Overdue</h3>
-                <p className="stat-value">{stats.overdue}</p>
+                <h3>Exported</h3>
+                <p className="stat-value">{stats.exported}</p>
               </div>
             </div>
 
             <div className="card" style={{ marginTop: '2rem' }}>
               <h3>Recent Invoices</h3>
               {recentInvoices.length === 0 ? (
-                <p>No invoices found. Create your first invoice!</p>
+                <p>No invoices found. Upload your first invoice!</p>
               ) : (
                 <table>
                   <thead>
                     <tr>
                       <th>Invoice #</th>
-                      <th>Client</th>
+                      <th>Supplier</th>
                       <th>Amount</th>
                       <th>Status</th>
                       <th>Due Date</th>
@@ -103,14 +107,14 @@ function Dashboard({ onLogout }) {
                     {recentInvoices.map((invoice) => (
                       <tr key={invoice._id}>
                         <td>{invoice.invoiceNumber}</td>
-                        <td>{invoice.clientName}</td>
-                        <td>${invoice.total.toFixed(2)}</td>
+                        <td>{invoice.supplierName}</td>
+                        <td>{invoice.grossTotal != null ? `${invoice.grossTotal.toFixed(2)}` : '-'}</td>
                         <td>
                           <span className={`status-badge status-${invoice.status}`}>
-                            {invoice.status}
+                            {invoice.status.replace(/_/g, ' ')}
                           </span>
                         </td>
-                        <td>{new Date(invoice.dueDate).toLocaleDateString()}</td>
+                        <td>{invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString() : '-'}</td>
                       </tr>
                     ))}
                   </tbody>

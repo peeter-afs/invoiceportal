@@ -1,9 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { invoiceAPI } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import './Dashboard.css';
 
-function InvoiceList({ onLogout }) {
+const STATUS_OPTIONS = [
+  'all', 'queued', 'processing', 'needs_review', 'ready',
+  'pending_approval', 'approved', 'rejected', 'exporting', 'exported', 'failed',
+];
+
+function InvoiceList() {
+  const { logout } = useAuth();
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
@@ -46,8 +53,9 @@ function InvoiceList({ onLogout }) {
         <div>
           <Link to="/dashboard">Dashboard</Link>
           <Link to="/invoices">Invoices</Link>
-          <Link to="/invoices/create">Create Invoice</Link>
-          <button className="btn btn-danger" onClick={onLogout}>
+          <Link to="/invoices/upload">Upload Invoice</Link>
+          <Link to="/invoices/create">Create Manually</Link>
+          <button className="btn btn-danger" onClick={logout}>
             Logout
           </button>
         </div>
@@ -64,12 +72,9 @@ function InvoiceList({ onLogout }) {
               onChange={(e) => setFilter(e.target.value)}
               style={{ padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
             >
-              <option value="all">All</option>
-              <option value="draft">Draft</option>
-              <option value="sent">Sent</option>
-              <option value="paid">Paid</option>
-              <option value="overdue">Overdue</option>
-              <option value="cancelled">Cancelled</option>
+              {STATUS_OPTIONS.map((s) => (
+                <option key={s} value={s}>{s === 'all' ? 'All' : s.replace(/_/g, ' ')}</option>
+              ))}
             </select>
           </div>
         </div>
@@ -88,8 +93,7 @@ function InvoiceList({ onLogout }) {
             <thead>
               <tr>
                 <th>Invoice #</th>
-                <th>Client</th>
-                <th>Issue Date</th>
+                <th>Supplier</th>
                 <th>Due Date</th>
                 <th>Amount</th>
                 <th>Status</th>
@@ -99,14 +103,15 @@ function InvoiceList({ onLogout }) {
             <tbody>
               {filteredInvoices.map((invoice) => (
                 <tr key={invoice._id}>
-                  <td>{invoice.invoiceNumber}</td>
-                  <td>{invoice.clientName}</td>
-                  <td>{new Date(invoice.issueDate).toLocaleDateString()}</td>
-                  <td>{new Date(invoice.dueDate).toLocaleDateString()}</td>
-                  <td>${invoice.total.toFixed(2)}</td>
+                  <td>
+                    <Link to={`/invoices/${invoice._id}`}>{invoice.invoiceNumber || '—'}</Link>
+                  </td>
+                  <td>{invoice.supplierName}</td>
+                  <td>{invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString() : '-'}</td>
+                  <td>{invoice.grossTotal != null ? `${invoice.grossTotal.toFixed(2)}` : '-'}</td>
                   <td>
                     <span className={`status-badge status-${invoice.status}`}>
-                      {invoice.status}
+                      {invoice.status.replace(/_/g, ' ')}
                     </span>
                   </td>
                   <td>

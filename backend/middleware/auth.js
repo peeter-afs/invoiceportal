@@ -1,53 +1,15 @@
-const jwt = require('jsonwebtoken');
-const { query } = require('../db');
-
-async function getUserFromToken(token) {
-  const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
-  if (!decoded?.tenantId) return null;
-
-  const users = await query(
-    'SELECT id, fs_username AS fsUsername, display_name AS displayName FROM portal_users WHERE id = ? LIMIT 1',
-    [decoded.userId]
-  );
-  const user = users[0];
-  if (!user) return null;
-
-  const memberships = await query(
-    'SELECT role, status FROM user_tenants WHERE user_id = ? AND tenant_id = ? LIMIT 1',
-    [decoded.userId, decoded.tenantId]
-  );
-  const membership = memberships[0];
-  if (!membership || membership.status !== 'active') return null;
-
-  const tenants = await query(
-    'SELECT id, tenant_key AS tenantKey, name FROM tenants WHERE id = ? LIMIT 1',
-    [decoded.tenantId]
-  );
-  const tenant = tenants[0];
-  if (!tenant) return null;
-
-  return {
-    id: user.id,
-    fsUsername: user.fsUsername,
-    displayName: user.displayName,
-    role: membership.role,
-    tenantId: tenant.id,
-    tenantKey: tenant.tenantKey,
-  };
-}
+const { getUserWithTenantInfo } = require('../services/userService');
 
 const auth = async (req, res, next) => {
   try {
-    const token = req.header('Authorization')?.replace('Bearer ', '');
-
-    if (!token) {
+    if (!req.session?.userId || !req.session?.tenantId) {
+      console.warn(`[auth] 401 on ${req.method} ${req.path} — session: userId=${req.session?.userId || 'none'}, tenantId=${req.session?.tenantId || 'none'}, cookie=${req.headers.cookie ? 'present' : 'MISSING'}`);
       return res.status(401).json({ error: 'Authentication required' });
     }
 
-    const user = await getUserFromToken(token);
-
+    const user = await getUserWithTenantInfo(req.session.userId, req.session.tenantId);
     if (!user) {
-      return res.status(401).json({ error: 'User not found' });
+      return res.status(401).json({ error: 'User not found or inactive' });
     }
 
     req.user = user;
@@ -55,21 +17,19 @@ const auth = async (req, res, next) => {
     req.tenantId = user.tenantId;
     next();
   } catch (error) {
-    res.status(401).json({ error: 'Invalid authentication token' });
+    res.status(401).json({ error: 'Authentication failed' });
   }
 };
 
 const adminAuth = async (req, res, next) => {
   try {
-    const token = req.header('Authorization')?.replace('Bearer ', '');
-
-    if (!token) {
+    if (!req.session?.userId || !req.session?.tenantId) {
       return res.status(401).json({ error: 'Authentication required' });
     }
 
-    const user = await getUserFromToken(token);
+    const user = await getUserWithTenantInfo(req.session.userId, req.session.tenantId);
     if (!user) {
-      return res.status(401).json({ error: 'User not found' });
+      return res.status(401).json({ error: 'User not found or inactive' });
     }
 
     if (user.role !== 'tenant_admin') {
@@ -85,4 +45,16 @@ const adminAuth = async (req, res, next) => {
   }
 };
 
-module.exports = { auth, adminAuth };
+const requireRole = (...roles) => {
+  return async (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    if (!roles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Insufficient permissions' });
+    }
+    next();
+  };
+};
+
+module.exports = { auth, adminAuth, requireRole };
