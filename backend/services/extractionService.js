@@ -206,10 +206,11 @@ async function saveExtractedData(invoiceId, extracted) {
     ]
   );
 
-  // Insert invoice lines
+  // Insert invoice lines (re-number sequentially to avoid duplicate rowNo from extraction)
   if (Array.isArray(extracted.lines) && extracted.lines.length > 0) {
     await query('DELETE FROM invoice_lines WHERE invoice_id = ?', [invoiceId]);
-    for (const line of extracted.lines) {
+    for (let i = 0; i < extracted.lines.length; i++) {
+      const line = extracted.lines[i];
       await query(
         `INSERT INTO invoice_lines (id, invoice_id, row_no, product_code, description,
            qty, unit, unit_price, net, vat_rate, vat_amount, gross, raw)
@@ -217,7 +218,7 @@ async function saveExtractedData(invoiceId, extracted) {
         [
           crypto.randomUUID(),
           invoiceId,
-          line.rowNo,
+          i + 1,
           line.productCode || null,
           line.description || null,
           line.qty != null ? line.qty : null,
