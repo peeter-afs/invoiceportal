@@ -266,6 +266,7 @@ router.put('/:id', auth, async (req, res) => {
       await conn.beginTransaction();
 
       const updatable = [
+        ['supplierId', 'supplier_id'],
         ['supplierName', 'supplier_name'],
         ['supplierAddress', 'supplier_address'],
         ['supplierRegNumber', 'supplier_reg_number'],

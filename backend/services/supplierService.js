@@ -2,18 +2,14 @@ const crypto = require('crypto');
 const { query } = require('../db');
 
 /**
- * Resolve a supplier from extracted invoice data.
- * Matches by: VAT number → reg number → name/alias (case-insensitive).
- * Auto-creates if no match found.
+ * Find a matching supplier without creating one.
+ * Used during extraction to link existing suppliers only.
  */
-async function resolveSupplier(tenantId, extractedData) {
-  const { supplierName, supplierVatNumber, supplierRegNumber, supplierAddress, supplierBankAccount } = extractedData;
+async function findSupplier(tenantId, extractedData) {
+  const { supplierName, supplierVatNumber, supplierRegNumber } = extractedData;
 
-  if (!supplierName && !supplierVatNumber && !supplierRegNumber) {
-    return null; // nothing to match on
-  }
+  if (!supplierName && !supplierVatNumber && !supplierRegNumber) return null;
 
-  // 1. Match by VAT number (exact)
   if (supplierVatNumber) {
     const byVat = await query(
       'SELECT id, name, futursoft_supplier_nr FROM suppliers WHERE tenant_id = ? AND vat_number = ? LIMIT 1',
@@ -22,7 +18,6 @@ async function resolveSupplier(tenantId, extractedData) {
     if (byVat[0]) return byVat[0];
   }
 
-  // 2. Match by reg number (exact)
   if (supplierRegNumber) {
     const byReg = await query(
       'SELECT id, name, futursoft_supplier_nr FROM suppliers WHERE tenant_id = ? AND reg_number = ? LIMIT 1',
@@ -31,7 +26,6 @@ async function resolveSupplier(tenantId, extractedData) {
     if (byReg[0]) return byReg[0];
   }
 
-  // 3. Match by name (case-insensitive)
   if (supplierName) {
     const byName = await query(
       'SELECT id, name, futursoft_supplier_nr FROM suppliers WHERE tenant_id = ? AND LOWER(name) = LOWER(?) LIMIT 1',
@@ -39,7 +33,6 @@ async function resolveSupplier(tenantId, extractedData) {
     );
     if (byName[0]) return byName[0];
 
-    // 3b. Match by alias
     const byAlias = await query(
       `SELECT s.id, s.name, s.futursoft_supplier_nr
        FROM suppliers s
@@ -51,7 +44,21 @@ async function resolveSupplier(tenantId, extractedData) {
     if (byAlias[0]) return byAlias[0];
   }
 
-  // 4. No match — auto-create
+  return null;
+}
+
+/**
+ * Resolve a supplier from invoice data — match existing or create a new record.
+ * Called when an invoice is approved to finalise the supplier link.
+ */
+async function resolveSupplier(tenantId, extractedData) {
+  const { supplierName, supplierVatNumber, supplierRegNumber, supplierAddress, supplierBankAccount } = extractedData;
+
+  // Try to find an existing supplier first
+  const found = await findSupplier(tenantId, extractedData);
+  if (found) return found;
+
+  // No match — auto-create only if we have a name
   if (!supplierName) return null;
 
   const supplierId = crypto.randomUUID();
@@ -179,6 +186,7 @@ async function removeAlias(aliasId) {
 }
 
 module.exports = {
+  findSupplier,
   resolveSupplier,
   getSuppliers,
   getSupplierById,

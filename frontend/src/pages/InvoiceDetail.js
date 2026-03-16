@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { invoiceAPI } from '../services/api';
+import { invoiceAPI, supplierAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import ProcessingStatus from '../components/ProcessingStatus';
 import ApprovalActions from '../components/ApprovalActions';
@@ -31,6 +31,9 @@ function InvoiceDetail() {
   const [leftPanelWidth, setLeftPanelWidth] = useState(50); // percentage
   const isDragging = useRef(false);
   const containerRef = useRef(null);
+  const [suppliers, setSuppliers] = useState([]);
+  const [editingSupplier, setEditingSupplier] = useState(false);
+  const [selectedSupplierId, setSelectedSupplierId] = useState('');
 
   // Resize drag handlers
   const handleMouseDown = useCallback((e) => {
@@ -72,6 +75,20 @@ function InvoiceDetail() {
       setLoading(false);
     }
   }, [id]);
+
+  useEffect(() => {
+    supplierAPI.getAll().then((res) => setSuppliers(res.data)).catch(() => {});
+  }, []);
+
+  const handleSaveSupplier = async () => {
+    try {
+      await invoiceAPI.update(id, { supplierId: selectedSupplierId || null });
+      setEditingSupplier(false);
+      fetchInvoice();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to update supplier');
+    }
+  };
 
   useEffect(() => {
     fetchInvoice();
@@ -176,10 +193,36 @@ function InvoiceDetail() {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                   <div>
                     <strong>Name:</strong><br />
-                    {invoice.supplierId ? (
-                      <Link to={`/suppliers/${invoice.supplierId}`}>{invoice.supplierName || '-'}</Link>
+                    {editingSupplier ? (
+                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.25rem' }}>
+                        <select
+                          value={selectedSupplierId}
+                          onChange={(e) => setSelectedSupplierId(e.target.value)}
+                          style={{ flex: 1, padding: '0.35rem' }}
+                        >
+                          <option value="">— unlinked —</option>
+                          {suppliers.map((s) => (
+                            <option key={s.id} value={s.id}>{s.name}</option>
+                          ))}
+                        </select>
+                        <button className="btn btn-primary" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={handleSaveSupplier}>Save</button>
+                        <button className="btn" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={() => setEditingSupplier(false)}>Cancel</button>
+                      </div>
                     ) : (
-                      invoice.supplierName || '-'
+                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                        {invoice.supplierId ? (
+                          <Link to={`/suppliers/${invoice.supplierId}`}>{invoice.supplierName || '-'}</Link>
+                        ) : (
+                          <span style={{ color: invoice.supplierName ? 'inherit' : '#999' }}>{invoice.supplierName || 'unlinked'}</span>
+                        )}
+                        <button
+                          className="btn"
+                          style={{ fontSize: '0.75rem', padding: '0.2rem 0.5rem', backgroundColor: '#ecf0f1', color: '#333' }}
+                          onClick={() => { setSelectedSupplierId(invoice.supplierId || ''); setEditingSupplier(true); }}
+                        >
+                          Change
+                        </button>
+                      </div>
                     )}
                   </div>
                   <div>
@@ -193,6 +236,11 @@ function InvoiceDetail() {
                   {invoice.supplierVatNumber && (
                     <div>
                       <strong>VAT Number:</strong><br />{invoice.supplierVatNumber}
+                    </div>
+                  )}
+                  {invoice.futursoftSupplierNr && (
+                    <div>
+                      <strong>Futursoft #:</strong><br />{invoice.futursoftSupplierNr}
                     </div>
                   )}
                   {invoice.supplierBankAccount && (

@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { query } = require('../db');
+const { resolveSupplier } = require('./supplierService');
 
 // Valid transitions
 const TRANSITIONS = {
@@ -64,6 +65,31 @@ async function approve(invoiceId, tenantId, userId, role, comment) {
     [userId, invoiceId, tenantId]
   );
   await recordApprovalAction(invoiceId, 'approve', userId, role, comment);
+
+  // Finalise supplier link: resolve or create from invoice's extracted data
+  try {
+    const rows = await query(
+      `SELECT supplier_id, supplier_name, supplier_vat_number, supplier_reg_number,
+              supplier_address, supplier_bank_account
+       FROM invoices WHERE id = ? LIMIT 1`,
+      [invoiceId]
+    );
+    const inv = rows[0];
+    if (inv && !inv.supplier_id && inv.supplier_name) {
+      const supplier = await resolveSupplier(tenantId, {
+        supplierName: inv.supplier_name,
+        supplierVatNumber: inv.supplier_vat_number,
+        supplierRegNumber: inv.supplier_reg_number,
+        supplierAddress: inv.supplier_address,
+        supplierBankAccount: inv.supplier_bank_account,
+      });
+      if (supplier) {
+        await query('UPDATE invoices SET supplier_id = ? WHERE id = ?', [supplier.id, invoiceId]);
+      }
+    }
+  } catch {
+    // non-fatal: supplier resolution errors should not block approval
+  }
 }
 
 async function reject(invoiceId, tenantId, userId, role, comment) {

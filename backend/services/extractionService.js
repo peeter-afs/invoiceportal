@@ -4,7 +4,7 @@ const { query } = require('../db');
 const openaiExtractor = require('./openaiExtractor');
 const costpocketExtractor = require('./costpocketExtractor');
 const { validate } = require('./validationService');
-const { resolveSupplier } = require('./supplierService');
+const { findSupplier } = require('./supplierService');
 
 const MIN_CONFIDENCE = 0.6; // below this, try CostPocket fallback
 const TOLERANCE = 0.02; // 2 cent tolerance for rounding
@@ -448,21 +448,25 @@ async function processInvoice(invoiceId, pdfBuffer, filename) {
       extractedBy: extracted.extractedBy,
     });
 
-    // Step 5b: Resolve supplier
+    // Step 5b: Link to existing supplier if found (no auto-create during extraction)
     try {
       const invoiceRow = await query('SELECT tenant_id FROM invoices WHERE id = ? LIMIT 1', [invoiceId]);
       if (invoiceRow[0]) {
-        const supplier = await resolveSupplier(invoiceRow[0].tenant_id, extracted);
+        const supplier = await findSupplier(invoiceRow[0].tenant_id, extracted);
         if (supplier) {
           await query('UPDATE invoices SET supplier_id = ? WHERE id = ?', [supplier.id, invoiceId]);
-          await addLog(invoiceId, 'supplier_resolve', 'info',
-            `Linked to supplier: ${supplier.name}${supplier.futursoft_supplier_nr ? ` (FS# ${supplier.futursoft_supplier_nr})` : ''}`,
+          await addLog(invoiceId, 'supplier_link', 'info',
+            `Linked to existing supplier: ${supplier.name}`,
             { supplierId: supplier.id, supplierName: supplier.name }
+          );
+        } else {
+          await addLog(invoiceId, 'supplier_link', 'info',
+            'No existing supplier matched — will be resolved on approval', null
           );
         }
       }
     } catch (supplierErr) {
-      await addLog(invoiceId, 'supplier_resolve', 'warn', `Supplier resolution failed: ${supplierErr.message}`, null);
+      await addLog(invoiceId, 'supplier_link', 'warn', `Supplier lookup failed: ${supplierErr.message}`, null);
     }
 
     // Step 6: Determine final status
