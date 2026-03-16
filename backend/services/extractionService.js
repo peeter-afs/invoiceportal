@@ -110,15 +110,21 @@ function correctExtractedMath(extracted) {
     }
   }
 
-  // Cross-check: if sum of line nets is much higher than netTotal, individual lines are likely wrong.
-  // Common cause: OpenAI concatenates adjacent columns (qty "1" + price "3,57" → qty=13, unitPrice=0.57)
-  // Fix: if net ≈ unitPrice for a line, the real qty is probably 1 (and the extracted qty was misread).
+  // Cross-check: compare sum of line nets against invoice netTotal.
+  // Common OCR/extraction error: OpenAI concatenates adjacent columns.
+  // E.g. qty "1" + price first digit "3" → qty=13, then net=13×3.57=46.41
+  // but real values are qty=1, net=3.57. The invoice header total is the ground truth.
   if (lines.length > 0 && extracted.netTotal != null) {
     const linesSum = lines.reduce((s, l) => s + Number(l.net || 0), 0);
     const headerNet = Number(extracted.netTotal);
 
-    if (linesSum > headerNet * 1.5 && headerNet > 0) {
-      // Lines total is way too high — try fixing individual lines
+    if (!approxEqual(linesSum, headerNet) && headerNet > 0 && linesSum > headerNet * 1.2) {
+      // Lines total is too high vs header — try fixing column-concatenation errors.
+      // For each line with qty>1 starting with "1", test if setting qty=1 and net=unitPrice
+      // brings the total closer to headerNet.
+      const candidateFixes = [];
+      let correctedSum = 0;
+
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         const qty = line.qty != null ? Number(line.qty) : null;
@@ -126,32 +132,48 @@ function correctExtractedMath(extracted) {
         const net = line.net != null ? Number(line.net) : null;
 
         if (qty != null && qty > 1 && unitPrice != null && net != null) {
-          // If unitPrice equals net, real qty is 1 (the extracted qty was garbage)
-          if (approxEqual(unitPrice, net)) {
-            corrections.push(`Line ${i + 1}: qty ${qty} → 1 (unitPrice ${unitPrice} = net ${net}, qty was misread)`);
-            line.qty = 1;
-            continue;
+          // Detect concat pattern: qty starts with "1" and remaining digits match
+          // the first digits of the unit price.
+          // E.g. qty=13, unitPrice=3.57 → "13"[1:]="3", price starts with "3" → concat
+          // E.g. qty=15, unitPrice=5.23 → "15"[1:]="5", price starts with "5" → concat
+          const qtyStr = String(Math.round(qty));
+          const priceIntStr = String(unitPrice).replace('.', '').replace(/^0+/, '');
+
+          if (qtyStr.startsWith('1') && qtyStr.length > 1 &&
+              priceIntStr.startsWith(qtyStr.substring(1))) {
+            // Likely concat error — candidate for fix
+            candidateFixes.push(i);
+            correctedSum += unitPrice; // net would be unitPrice if qty=1
+          } else {
+            correctedSum += net;
           }
-          // If net / qty gives a cleaner unitPrice, recalculate
-          const realUnitPrice = net / qty;
-          // But also check: what if qty should be lower? Try qty=1 with net as the line total
-          if (unitPrice > net) {
-            // unitPrice shouldn't be larger than net when qty >= 1
-            corrections.push(`Line ${i + 1}: qty ${qty} → 1, unitPrice ${unitPrice} → ${net} (unitPrice > net, misread)`);
-            line.qty = 1;
-            line.unitPrice = net;
-          }
+        } else {
+          correctedSum += net || 0;
         }
       }
-      // Recalculate after fixes
-      const fixedSum = lines.reduce((s, l) => s + Number(l.net || 0), 0);
-      if (approxEqual(fixedSum, headerNet)) {
-        corrections.push(`Line sum fixed: ${linesSum.toFixed(2)} → ${fixedSum.toFixed(2)} (matches netTotal ${headerNet})`);
+
+      // Apply fixes only if the corrected sum is much closer to headerNet
+      if (candidateFixes.length > 0 &&
+          Math.abs(correctedSum - headerNet) < Math.abs(linesSum - headerNet) * 0.5) {
+        for (const idx of candidateFixes) {
+          const line = lines[idx];
+          const oldQty = line.qty;
+          const oldNet = line.net;
+          line.qty = 1;
+          line.net = Number(Number(line.unitPrice).toFixed(2));
+          corrections.push(
+            `Line ${idx + 1}: qty ${oldQty} → 1, net ${oldNet} → ${line.net} (column concat fix; line total in PDF = unitPrice when qty=1)`
+          );
+        }
+        const fixedSum = lines.reduce((s, l) => s + Number(l.net || 0), 0);
+        corrections.push(`Line sum fixed: ${linesSum.toFixed(2)} → ${fixedSum.toFixed(2)} (header netTotal = ${headerNet})`);
       }
     }
   }
 
-  // Recalculate header totals from lines if they don't match
+  // Recalculate header totals from lines if they don't match.
+  // IMPORTANT: trust the header netTotal from the invoice over line sums,
+  // unless netTotal is null or the lines sum is very close (rounding).
   if (lines.length > 0) {
     const linesNetSum = lines.reduce((s, l) => s + Number(l.net || 0), 0);
     const linesVatSum = lines.reduce((s, l) => s + Number(l.vatAmount || 0), 0);
@@ -167,11 +189,14 @@ function correctExtractedMath(extracted) {
       }
     }
 
-    // If netTotal is still null or mismatched, derive from lines
-    if (extracted.netTotal == null || !approxEqual(linesNetSum, extracted.netTotal)) {
-      if (extracted.netTotal != null) {
-        corrections.push(`netTotal ${extracted.netTotal} → ${linesNetSum.toFixed(2)} (recalculated from lines)`);
-      }
+    // Only override netTotal with line sums if netTotal is null, or if lines sum is
+    // LOWER than netTotal (meaning netTotal was inflated, not the lines).
+    // If lines sum is higher, the header total is more trustworthy (printed on invoice).
+    if (extracted.netTotal == null) {
+      extracted.netTotal = Number(linesNetSum.toFixed(2));
+      corrections.push(`netTotal derived from lines: ${extracted.netTotal}`);
+    } else if (!approxEqual(linesNetSum, extracted.netTotal) && linesNetSum < Number(extracted.netTotal)) {
+      corrections.push(`netTotal ${extracted.netTotal} → ${linesNetSum.toFixed(2)} (lines sum is lower, likely more accurate)`);
       extracted.netTotal = Number(linesNetSum.toFixed(2));
     }
 
