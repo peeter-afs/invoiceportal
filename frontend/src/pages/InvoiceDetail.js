@@ -94,10 +94,6 @@ function InvoiceDetail() {
     return () => clearInterval(interval);
   }, [id, fetchInvoice]);
 
-  if (loading) return <div className="container"><p>Loading...</p></div>;
-  if (error) return <div className="container"><div className="error">{error}</div></div>;
-  if (!invoice) return null;
-
   // Load PDF blob when sidebar is opened
   useEffect(() => {
     if (!showPdf || pdfBlobUrl) return;
@@ -118,6 +114,10 @@ function InvoiceDetail() {
       if (pdfBlobUrl) URL.revokeObjectURL(pdfBlobUrl);
     };
   }, [pdfBlobUrl]);
+
+  if (loading) return <div className="container"><p>Loading...</p></div>;
+  if (error) return <div className="container"><div className="error">{error}</div></div>;
+  if (!invoice) return null;
 
   const isProcessing = ['queued', 'processing'].includes(invoice.status);
 
