@@ -56,12 +56,19 @@ async function resolveSupplier(tenantId, extractedData) {
 
   // Try to find an existing supplier first
   const found = await findSupplier(tenantId, extractedData);
-  if (found) return found;
+  if (found) {
+    console.log(`[supplier] resolveSupplier: matched existing "${found.name}" (id=${found.id}) for tenant ${tenantId}`);
+    return found;
+  }
 
   // No match — auto-create only if we have a name
-  if (!supplierName) return null;
+  if (!supplierName) {
+    console.warn(`[supplier] resolveSupplier: no supplierName provided, skipping auto-create for tenant ${tenantId}`);
+    return null;
+  }
 
   const supplierId = crypto.randomUUID();
+  console.log(`[supplier] resolveSupplier: creating new supplier "${supplierName}" (id=${supplierId}) for tenant ${tenantId}`);
   await query(
     `INSERT INTO suppliers (id, tenant_id, name, vat_number, reg_number, address, bank_account)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -233,8 +240,9 @@ async function lookupFutursoftSupplierNr(invoiceId, session) {
   let client;
   try {
     client = await createFromSession(session);
-  } catch {
-    return; // FS not configured or no token
+  } catch (err) {
+    console.warn(`[supplier] FS client init failed for invoice ${invoiceId}: ${err.message}`);
+    return;
   }
 
   const cleaned = cleanSupplierName(supplier.name);
@@ -247,7 +255,13 @@ async function lookupFutursoftSupplierNr(invoiceId, session) {
 
   for (const searchTerm of candidates) {
     if (!searchTerm) continue;
-    const nr = await client.searchSupplierByName(searchTerm);
+    let nr;
+    try {
+      nr = await client.searchSupplierByName(searchTerm);
+    } catch (searchErr) {
+      console.error(`[supplier] FS search failed for "${searchTerm}" (invoice ${invoiceId}): ${searchErr.message}`);
+      continue;
+    }
     if (nr && nr !== 0 && nr !== '0') {
       await query(
         'UPDATE suppliers SET futursoft_supplier_nr = ? WHERE id = ?',

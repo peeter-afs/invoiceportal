@@ -75,6 +75,7 @@ async function approve(invoiceId, tenantId, userId, role, comment) {
       [invoiceId]
     );
     const inv = rows[0];
+    console.log(`[approval] Supplier resolution for invoice ${invoiceId}: supplier_id=${inv?.supplier_id || 'null'}, supplier_name=${inv?.supplier_name || 'null'}`);
     if (inv && !inv.supplier_id && inv.supplier_name) {
       const supplier = await resolveSupplier(tenantId, {
         supplierName: inv.supplier_name,
