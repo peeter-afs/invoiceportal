@@ -259,6 +259,13 @@ class FutursoftApiClient {
     return this._request('POST', '/warehouse/v1/purchase-orders', payload);
   }
 
+  async createProposal(payload) {
+    if (this.mockMode) {
+      return { ...payload, purchaseOrderNr: Math.floor(Math.random() * 90000) + 10000, status: 'PROPOSAL' };
+    }
+    return this._request('POST', '/warehouse/v1/purchase-orders/proposals', payload);
+  }
+
   async postReceiving(payload) {
     if (this.mockMode) {
       return { success: true, ...payload };

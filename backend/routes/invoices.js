@@ -11,7 +11,7 @@ const {
   getApprovalHistory,
 } = require('../services/approvalService');
 const { matchInvoice, getMatchResults, overrideMatch } = require('../services/matchingService');
-const { fetchPurchaseOrder, createPurchaseOrderFromInvoice } = require('../services/purchaseOrderService');
+const { fetchPurchaseOrder, createPurchaseOrderFromInvoice, createOrderProposal } = require('../services/purchaseOrderService');
 const { getReceivingPreview, postReceiving } = require('../services/receivingService');
 const { getConsolidationState, applyConsolidationActions } = require('../services/consolidationService');
 const { getTenantSettings } = require('../services/tenantService');
@@ -506,6 +506,19 @@ router.put('/:id/lines/:lineId/match', auth, async (req, res) => {
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Order Proposal ──
+
+// Create order proposal in Futursoft
+router.post('/:id/proposal', auth, async (req, res) => {
+  try {
+    const { orderTypeCode } = req.body;
+    const result = await createOrderProposal(req.params.id, req.session, orderTypeCode);
+    res.status(201).json(result);
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message });
   }
 });
 

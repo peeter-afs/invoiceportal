@@ -79,4 +79,69 @@ async function createPurchaseOrderFromInvoice(invoiceId, session) {
   return created;
 }
 
-module.exports = { fetchPurchaseOrder, createPurchaseOrderFromInvoice };
+/**
+ * Create an order proposal in Futursoft from invoice data.
+ * Requires the invoice to have a linked supplier with a Futursoft supplier number.
+ */
+async function createOrderProposal(invoiceId, session, orderTypeCode) {
+  const invoices = await query(
+    `SELECT i.id, i.tenant_id, i.supplier_name, i.supplier_id, i.currency,
+            s.futursoft_supplier_nr
+     FROM invoices i
+     LEFT JOIN suppliers s ON s.id = i.supplier_id
+     WHERE i.id = ? LIMIT 1`,
+    [invoiceId]
+  );
+  const invoice = invoices[0];
+  if (!invoice) throw Object.assign(new Error('Invoice not found'), { status: 404 });
+
+  if (!invoice.supplier_id) {
+    throw Object.assign(new Error('Invoice has no linked supplier. Link a supplier first.'), { status: 400 });
+  }
+  if (!invoice.futursoft_supplier_nr) {
+    throw Object.assign(new Error('Supplier has no Futursoft supplier number. Set it first.'), { status: 400 });
+  }
+
+  const supplierNr = parseInt(invoice.futursoft_supplier_nr, 10);
+  if (isNaN(supplierNr) || supplierNr <= 0) {
+    throw Object.assign(new Error('Invalid Futursoft supplier number'), { status: 400 });
+  }
+
+  const lines = await query(
+    `SELECT id, row_no, product_code, description, qty, unit_price, vat_rate
+     FROM invoice_lines WHERE invoice_id = ? ORDER BY row_no`,
+    [invoiceId]
+  );
+
+  if (lines.length === 0) {
+    throw Object.assign(new Error('Invoice has no lines'), { status: 400 });
+  }
+
+  const typeCode = parseInt(orderTypeCode, 10) || 1;
+
+  const payload = {
+    supplierNr,
+    orderTypeCode: typeCode,
+    status: 'PROPOSAL',
+    currencyCode: invoice.currency || 'EUR',
+    exchangeRate: 1,
+    rows: lines.map((l, idx) => ({
+      productCode: l.product_code ? l.product_code.toUpperCase() : null,
+      productName: l.description || null,
+      quantity: l.qty != null ? Number(l.qty) : 0,
+      buyingPrice: l.unit_price != null ? Number(l.unit_price) : 0,
+      vatRate: l.vat_rate != null ? Number(l.vat_rate) : 0,
+      supplierNr,
+      rowOrderNr: idx + 1,
+    })),
+  };
+
+  const client = await createFromSession(session);
+  const result = await client.createProposal(payload);
+
+  console.log(`[proposal] Created order proposal for invoice ${invoiceId}: PO# ${result?.purchaseOrderNr || 'unknown'}`);
+
+  return result;
+}
+
+module.exports = { fetchPurchaseOrder, createPurchaseOrderFromInvoice, createOrderProposal };

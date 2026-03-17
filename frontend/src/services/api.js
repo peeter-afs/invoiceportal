@@ -67,6 +67,9 @@ export const invoiceAPI = {
   getConsolidation: (id) => api.get(`/invoices/${id}/consolidation`),
   applyConsolidationActions: (id, actions) =>
     api.post(`/invoices/${id}/consolidation/actions`, { actions }),
+  // Order proposal
+  createProposal: (id, orderTypeCode) =>
+    api.post(`/invoices/${id}/proposal`, { orderTypeCode }),
 };
 
 // Futursoft API (proxied through backend)

@@ -459,7 +459,7 @@ function InvoiceDetail() {
                       Row Matching
                     </Link>
                     {invoice.workflowConfig?.orderProposal && (
-                      <Link to={`/invoices/${id}/matching`} className="btn" style={{ backgroundColor: '#2980b9', color: 'white' }}>
+                      <Link to={`/invoices/${id}/proposal`} className="btn" style={{ backgroundColor: '#2980b9', color: 'white' }}>
                         Order Proposal
                       </Link>
                     )}

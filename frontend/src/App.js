@@ -12,6 +12,7 @@ import ReceivingPreview from './pages/ReceivingPreview';
 import ConsolidationReview from './pages/ConsolidationReview';
 import EmailInboxSettings from './pages/EmailInboxSettings';
 import WorkflowSettings from './pages/WorkflowSettings';
+import OrderProposal from './pages/OrderProposal';
 import SupplierList from './pages/SupplierList';
 import SupplierDetail from './pages/SupplierDetail';
 import './App.css';
@@ -56,6 +57,7 @@ function App() {
             <Route path="/invoices/:id" element={<PrivateRoute><InvoiceDetail /></PrivateRoute>} />
             <Route path="/invoices/:id/matching" element={<PrivateRoute><InvoiceMatchReview /></PrivateRoute>} />
             <Route path="/invoices/:id/receiving" element={<PrivateRoute><ReceivingPreview /></PrivateRoute>} />
+            <Route path="/invoices/:id/proposal" element={<PrivateRoute><OrderProposal /></PrivateRoute>} />
             <Route path="/invoices/:id/consolidation" element={<PrivateRoute><ConsolidationReview /></PrivateRoute>} />
             <Route path="/suppliers" element={<PrivateRoute><SupplierList /></PrivateRoute>} />
             <Route path="/suppliers/:id" element={<PrivateRoute><SupplierDetail /></PrivateRoute>} />
