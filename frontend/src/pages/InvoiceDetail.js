@@ -21,16 +21,58 @@ const STATUS_LABEL = {
 };
 
 const EDITABLE_STATUSES = ['needs_review', 'ready', 'rejected'];
+const TOLERANCE = 0.02;
+const DATE_FIELDS = new Set(['invoiceDate', 'dueDate', 'deliveryDate']);
+const NUMBER_FIELDS = new Set(['netTotal', 'vatTotal', 'grossTotal']);
 
-const inputStyle = { padding: '0.35rem', border: '1px solid #ccc', borderRadius: '4px', width: '100%', boxSizing: 'border-box', backgroundColor: '#fafbfc' };
-const numInputStyle = { ...inputStyle, width: '100px' };
-const smallInputStyle = { ...inputStyle, fontSize: '0.85rem', padding: '0.25rem 0.35rem' };
+const inlineInputStyle = {
+  border: 'none',
+  borderBottom: '2px solid #3498db',
+  outline: 'none',
+  fontSize: 'inherit',
+  fontFamily: 'inherit',
+  background: 'transparent',
+  padding: '1px 0',
+  width: '100%',
+  minWidth: '60px',
+};
+
+const cellInputStyle = {
+  padding: '0.2rem 0.3rem',
+  border: '1px solid #ccc',
+  borderRadius: '3px',
+  fontSize: '0.85rem',
+  background: '#fafbfc',
+  width: '100%',
+  boxSizing: 'border-box',
+};
 
 function toDateInputValue(val) {
   if (!val) return '';
   const d = new Date(val);
   if (isNaN(d.getTime())) return '';
   return d.toISOString().split('T')[0];
+}
+
+function formatDate(val) {
+  if (!val) return '-';
+  const s = String(val);
+  const d = new Date(s.includes('T') ? s : s + 'T12:00:00');
+  if (isNaN(d.getTime())) return '-';
+  return d.toLocaleDateString();
+}
+
+function lineToEdit(l) {
+  return {
+    productCode: l.productCode || '',
+    description: l.description || '',
+    qty: l.qty != null ? String(l.qty) : '',
+    unit: l.unit || '',
+    unitPrice: l.unitPrice != null ? String(l.unitPrice) : '',
+    vatRate: l.vatRate != null ? String(l.vatRate) : '',
+    net: l.net != null ? String(l.net) : '',
+    gross: l.gross != null ? String(l.gross) : '',
+  };
 }
 
 function InvoiceDetail() {
@@ -50,12 +92,17 @@ function InvoiceDetail() {
   const [editingFsNr, setEditingFsNr] = useState(false);
   const [fsNrValue, setFsNrValue] = useState('');
 
-  // Inline edit state
-  const [editing, setEditing] = useState(false);
-  const [editData, setEditData] = useState({});
-  const [editLines, setEditLines] = useState([]);
+  // Double-click inline edit state
+  const [editingField, setEditingField] = useState(null);
+  const [editingLineIdx, setEditingLineIdx] = useState(null);
+  const [pendingChanges, setPendingChanges] = useState({});
+  const [pendingLines, setPendingLines] = useState(null);
+  const [tempValue, setTempValue] = useState('');
   const [saving, setSaving] = useState(false);
 
+  const hasPendingChanges = Object.keys(pendingChanges).length > 0 || pendingLines !== null;
+
+  // ── Resize handle ──
   const handleMouseDown = useCallback((e) => {
     e.preventDefault();
     isDragging.current = true;
@@ -85,6 +132,7 @@ function InvoiceDetail() {
     };
   }, []);
 
+  // ── Data fetching ──
   const fetchInvoice = useCallback(async () => {
     try {
       const res = await invoiceAPI.getById(id);
@@ -100,6 +148,33 @@ function InvoiceDetail() {
     supplierAPI.getAll().then((res) => setSuppliers(res.data)).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    fetchInvoice();
+    let interval;
+    interval = setInterval(async () => {
+      try {
+        const res = await invoiceAPI.getById(id);
+        setInvoice(res.data);
+        if (!['queued', 'processing'].includes(res.data.status)) clearInterval(interval);
+      } catch { clearInterval(interval); }
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [id, fetchInvoice]);
+
+  useEffect(() => {
+    if (!showPdf || pdfBlobUrl) return;
+    let revoked = false;
+    invoiceAPI.getFile(id)
+      .then((res) => { if (revoked) return; setPdfBlobUrl(URL.createObjectURL(res.data)); })
+      .catch(() => {});
+    return () => { revoked = true; };
+  }, [showPdf, id, pdfBlobUrl]);
+
+  useEffect(() => {
+    return () => { if (pdfBlobUrl) URL.revokeObjectURL(pdfBlobUrl); };
+  }, [pdfBlobUrl]);
+
+  // ── Supplier link helpers ──
   const handleSaveSupplier = async () => {
     try {
       await invoiceAPI.update(id, { supplierId: selectedSupplierId || null });
@@ -122,154 +197,183 @@ function InvoiceDetail() {
     }
   };
 
-  useEffect(() => {
-    fetchInvoice();
-    let interval;
-    const startPolling = () => {
-      interval = setInterval(async () => {
-        try {
-          const res = await invoiceAPI.getById(id);
-          setInvoice(res.data);
-          if (!['queued', 'processing'].includes(res.data.status)) {
-            clearInterval(interval);
-          }
-        } catch {
-          clearInterval(interval);
-        }
-      }, 3000);
-    };
-    startPolling();
-    return () => clearInterval(interval);
-  }, [id, fetchInvoice]);
-
-  useEffect(() => {
-    if (!showPdf || pdfBlobUrl) return;
-    let revoked = false;
-    invoiceAPI.getFile(id)
-      .then((res) => {
-        if (revoked) return;
-        const url = URL.createObjectURL(res.data);
-        setPdfBlobUrl(url);
-      })
-      .catch(() => {});
-    return () => { revoked = true; };
-  }, [showPdf, id, pdfBlobUrl]);
-
-  useEffect(() => {
-    return () => {
-      if (pdfBlobUrl) URL.revokeObjectURL(pdfBlobUrl);
-    };
-  }, [pdfBlobUrl]);
-
-  // --- Edit mode helpers ---
-  const startEditing = () => {
-    setEditData({
-      supplierName: invoice.supplierName || '',
-      supplierAddress: invoice.supplierAddress || '',
-      supplierRegNumber: invoice.supplierRegNumber || '',
-      supplierVatNumber: invoice.supplierVatNumber || '',
-      supplierBankAccount: invoice.supplierBankAccount || '',
-      invoiceNumber: invoice.invoiceNumber || '',
-      invoiceDate: toDateInputValue(invoice.invoiceDate),
-      dueDate: toDateInputValue(invoice.dueDate),
-      currency: invoice.currency || '',
-      referenceNumber: invoice.referenceNumber || '',
-      purchaseOrderNr: invoice.purchaseOrderNr || '',
-      paymentTerms: invoice.paymentTerms || '',
-      penaltyRate: invoice.penaltyRate || '',
-      deliveryDate: toDateInputValue(invoice.deliveryDate),
-      deliveryMethod: invoice.deliveryMethod || '',
-      deliveryNoteNr: invoice.deliveryNoteNr || '',
-      buyerReference: invoice.buyerReference || '',
-      sellerReference: invoice.sellerReference || '',
-      netTotal: invoice.netTotal != null ? invoice.netTotal : '',
-      vatTotal: invoice.vatTotal != null ? invoice.vatTotal : '',
-      grossTotal: invoice.grossTotal != null ? invoice.grossTotal : '',
-    });
-    setEditLines((invoice.lines || []).map((l) => ({
-      productCode: l.productCode || '',
-      description: l.description || '',
-      qty: l.qty != null ? l.qty : '',
-      unit: l.unit || '',
-      unitPrice: l.unitPrice != null ? l.unitPrice : '',
-      vatRate: l.vatRate != null ? l.vatRate : '',
-      net: l.net != null ? l.net : '',
-      gross: l.gross != null ? l.gross : '',
-    })));
-    setEditing(true);
+  // ── Field editing ──
+  // Get display value for a field (pending overrides invoice)
+  const dv = (field) => {
+    if (Object.prototype.hasOwnProperty.call(pendingChanges, field)) return pendingChanges[field];
+    return invoice?.[field] ?? null;
   };
 
-  const cancelEditing = () => {
-    setEditing(false);
-    setEditData({});
-    setEditLines([]);
+  const startFieldEdit = (field, initVal) => {
+    setEditingField(field);
+    setTempValue(initVal ?? '');
   };
 
-  const updateField = (field, value) => {
-    setEditData((prev) => ({ ...prev, [field]: value }));
+  const commitFieldEdit = useCallback(() => {
+    if (!editingField) return;
+    const field = editingField;
+    const value = tempValue;
+    setPendingChanges((prev) => ({ ...prev, [field]: value }));
+    setEditingField(null);
+  }, [editingField, tempValue]);
+
+  const cancelFieldEdit = useCallback(() => {
+    setEditingField(null);
+    setTempValue('');
+  }, []);
+
+  const handleFieldKeyDown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); commitFieldEdit(); }
+    if (e.key === 'Escape') { e.preventDefault(); cancelFieldEdit(); }
   };
 
-  const updateLine = (idx, field, value) => {
-    setEditLines((prev) => {
-      const next = [...prev];
+  // Render an inline-editable field value
+  // field: state key; displayFn: optional formatter for display; opts: { type, step, width }
+  const renderEditable = (field, displayFn, opts = {}) => {
+    const isActive = editingField === field;
+    const hasDirty = Object.prototype.hasOwnProperty.call(pendingChanges, field);
+    const raw = dv(field);
+
+    if (!canEdit) {
+      return <>{displayFn ? displayFn(raw) : (raw ?? '-')}</>;
+    }
+
+    if (isActive) {
+      const inputType = DATE_FIELDS.has(field) ? 'date' : NUMBER_FIELDS.has(field) ? 'number' : 'text';
+      return (
+        <input
+          autoFocus
+          type={inputType}
+          step={inputType === 'number' ? (opts.step || '0.01') : undefined}
+          value={tempValue}
+          onChange={(e) => setTempValue(e.target.value)}
+          onBlur={commitFieldEdit}
+          onKeyDown={handleFieldKeyDown}
+          style={{ ...inlineInputStyle, width: opts.width || '100%' }}
+        />
+      );
+    }
+
+    const displayed = displayFn ? displayFn(raw) : (raw != null ? String(raw) : '-');
+    const initVal = DATE_FIELDS.has(field) ? toDateInputValue(raw) : (raw != null ? String(raw) : '');
+
+    return (
+      <span
+        onDoubleClick={() => startFieldEdit(field, initVal)}
+        title="Double-click to edit"
+        style={{
+          cursor: 'text',
+          borderBottom: hasDirty ? '2px solid #f39c12' : '1px dotted #ccc',
+          display: 'inline-block',
+          minWidth: '1.5rem',
+          padding: '1px 0',
+        }}
+      >
+        {displayed || '-'}
+      </span>
+    );
+  };
+
+  // ── Line editing ──
+  const initPendingLines = useCallback(() => {
+    return (invoice?.lines || []).map(lineToEdit);
+  }, [invoice]);
+
+  const startLineEdit = (idx) => {
+    if (editingField) commitFieldEdit();
+    if (!pendingLines) setPendingLines(initPendingLines());
+    setEditingLineIdx(idx);
+  };
+
+  const updatePendingLine = (idx, field, value) => {
+    setPendingLines((prev) => {
+      const next = [...(prev || [])];
       next[idx] = { ...next[idx], [field]: value };
-      // Auto-calculate net when qty or unitPrice change
       if (field === 'qty' || field === 'unitPrice') {
         const q = parseFloat(field === 'qty' ? value : next[idx].qty);
         const p = parseFloat(field === 'unitPrice' ? value : next[idx].unitPrice);
-        if (!isNaN(q) && !isNaN(p)) {
-          next[idx].net = Math.round(q * p * 100) / 100;
-        }
+        if (!isNaN(q) && !isNaN(p)) next[idx].net = String(Math.round(q * p * 100) / 100);
       }
-      // Auto-calculate gross when net or vatRate change
-      if (field === 'net' || field === 'vatRate' || field === 'qty' || field === 'unitPrice') {
+      if (['net', 'vatRate', 'qty', 'unitPrice'].includes(field)) {
         const n = parseFloat(next[idx].net);
         const vr = parseFloat(next[idx].vatRate);
-        if (!isNaN(n) && !isNaN(vr)) {
-          next[idx].gross = Math.round(n * (1 + vr / 100) * 100) / 100;
-        }
+        if (!isNaN(n) && !isNaN(vr)) next[idx].gross = String(Math.round(n * (1 + vr / 100) * 100) / 100);
       }
       return next;
     });
   };
 
+  const commitLineEdit = () => setEditingLineIdx(null);
+
+  const cancelLineEdit = useCallback(() => {
+    if (editingLineIdx !== null) {
+      const original = invoice?.lines?.[editingLineIdx];
+      if (original) {
+        setPendingLines((prev) => {
+          if (!prev) return prev;
+          const next = [...prev];
+          next[editingLineIdx] = lineToEdit(original);
+          return next;
+        });
+      }
+    }
+    setEditingLineIdx(null);
+  }, [editingLineIdx, invoice]);
+
   const addLine = () => {
-    setEditLines((prev) => [...prev, {
-      productCode: '', description: '', qty: '', unit: '',
-      unitPrice: '', vatRate: '', net: '', gross: '',
-    }]);
+    const currentLen = (pendingLines || invoice?.lines || []).length;
+    setPendingLines((prev) => {
+      const base = prev || initPendingLines();
+      return [...base, { productCode: '', description: '', qty: '1', unit: '', unitPrice: '', vatRate: '0', net: '', gross: '' }];
+    });
+    setEditingLineIdx(currentLen);
   };
 
-  const removeLine = (idx) => {
-    setEditLines((prev) => prev.filter((_, i) => i !== idx));
+  const deleteLine = (idx) => {
+    setPendingLines((prev) => {
+      const base = prev || initPendingLines();
+      return base.filter((_, i) => i !== idx);
+    });
+    if (editingLineIdx === idx) setEditingLineIdx(null);
+    else if (editingLineIdx > idx) setEditingLineIdx((p) => p - 1);
   };
 
-  const handleSaveEdit = async () => {
+  // ── Save / Discard ──
+  const saveAll = async () => {
     setSaving(true);
     setError('');
     try {
-      const payload = { ...editData };
-      // Convert numeric fields
+      const payload = {};
+
+      for (const [key, val] of Object.entries(pendingChanges)) {
+        payload[key] = val;
+      }
       for (const k of ['netTotal', 'vatTotal', 'grossTotal']) {
-        payload[k] = payload[k] !== '' ? Number(payload[k]) : null;
+        if (k in payload) payload[k] = payload[k] !== '' ? Number(payload[k]) : null;
       }
-      // Convert date fields — send empty as null
       for (const k of ['invoiceDate', 'dueDate', 'deliveryDate']) {
-        payload[k] = payload[k] || null;
+        if (k in payload) payload[k] = payload[k] || null;
       }
-      payload.lines = editLines.map((l) => ({
-        productCode: l.productCode || null,
-        description: l.description || null,
-        qty: l.qty !== '' ? Number(l.qty) : null,
-        unit: l.unit || null,
-        unitPrice: l.unitPrice !== '' ? Number(l.unitPrice) : null,
-        vatRate: l.vatRate !== '' ? Number(l.vatRate) : null,
-        net: l.net !== '' ? Number(l.net) : null,
-        vatAmount: l.vatRate !== '' && l.net !== '' ? Math.round(Number(l.net) * Number(l.vatRate) / 100 * 100) / 100 : null,
-        gross: l.gross !== '' ? Number(l.gross) : null,
-      }));
+
+      if (pendingLines !== null) {
+        payload.lines = pendingLines.map((l) => ({
+          productCode: l.productCode || null,
+          description: l.description || null,
+          qty: l.qty !== '' ? Number(l.qty) : null,
+          unit: l.unit || null,
+          unitPrice: l.unitPrice !== '' ? Number(l.unitPrice) : null,
+          vatRate: l.vatRate !== '' ? Number(l.vatRate) : null,
+          net: l.net !== '' ? Number(l.net) : null,
+          vatAmount: (l.vatRate !== '' && l.net !== '') ? Math.round(Number(l.net) * Number(l.vatRate) / 100 * 100) / 100 : null,
+          gross: l.gross !== '' ? Number(l.gross) : null,
+        }));
+      }
+
       await invoiceAPI.update(id, payload);
-      setEditing(false);
+      setPendingChanges({});
+      setPendingLines(null);
+      setEditingField(null);
+      setEditingLineIdx(null);
       fetchInvoice();
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to save changes');
@@ -278,9 +382,16 @@ function InvoiceDetail() {
     }
   };
 
-  // Compute row sums and per-line errors (works for both view and edit mode)
-  const viewLines = editing ? editLines : (invoice?.lines || []);
-  const TOLERANCE = 0.02;
+  const discardAll = () => {
+    setPendingChanges({});
+    setPendingLines(null);
+    setEditingField(null);
+    setEditingLineIdx(null);
+  };
+
+  // ── Row sums and error detection ──
+  const viewLines = (pendingLines ?? invoice?.lines) || [];
+
   const lineErrors = viewLines.map((line) => {
     const q = parseFloat(line.qty);
     const p = parseFloat(line.unitPrice);
@@ -298,12 +409,15 @@ function InvoiceDetail() {
   const rowNetSum = viewLines.reduce((s, l) => s + (parseFloat(l.net) || 0), 0);
   const rowGrossSum = viewLines.reduce((s, l) => s + (parseFloat(l.gross) || 0), 0);
 
-  const invNetTotal = editing ? parseFloat(editData.netTotal) : invoice?.netTotal;
-  const invGrossTotal = editing ? parseFloat(editData.grossTotal) : invoice?.grossTotal;
+  const invNetTotal = Object.prototype.hasOwnProperty.call(pendingChanges, 'netTotal')
+    ? parseFloat(pendingChanges.netTotal) : invoice?.netTotal;
+  const invGrossTotal = Object.prototype.hasOwnProperty.call(pendingChanges, 'grossTotal')
+    ? parseFloat(pendingChanges.grossTotal) : invoice?.grossTotal;
 
-  const netMatches = !isNaN(invNetTotal) && Math.abs(rowNetSum - invNetTotal) <= TOLERANCE;
-  const grossMatches = !isNaN(invGrossTotal) && Math.abs(rowGrossSum - invGrossTotal) <= TOLERANCE;
+  const netMatches = invNetTotal != null && !isNaN(invNetTotal) && Math.abs(rowNetSum - invNetTotal) <= TOLERANCE;
+  const grossMatches = invGrossTotal != null && !isNaN(invGrossTotal) && Math.abs(rowGrossSum - invGrossTotal) <= TOLERANCE;
 
+  // ── Render ──
   if (loading) return <div className="container"><p>Loading...</p></div>;
   if (error && !invoice) return <div className="container"><div className="error">{error}</div></div>;
   if (!invoice) return null;
@@ -324,39 +438,17 @@ function InvoiceDetail() {
       </nav>
 
       <div ref={containerRef} style={{ display: 'flex', padding: '0 1rem', maxWidth: showPdf ? '100%' : '1100px', margin: '0 auto' }}>
+
         {/* Left: Invoice data */}
         <div style={{ width: showPdf ? `${leftPanelWidth}%` : '100%', flexShrink: 0, minWidth: 0, paddingRight: showPdf ? '0.5rem' : 0 }}>
+
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', marginTop: '1rem' }}>
             <h2>Invoice Detail</h2>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              {canEdit && !editing && (
-                <button
-                  className="btn btn-primary"
-                  onClick={startEditing}
-                  style={{ fontSize: '0.85rem' }}
-                >
-                  Edit
-                </button>
-              )}
-              {editing && (
-                <>
-                  <button
-                    className="btn btn-primary"
-                    onClick={handleSaveEdit}
-                    disabled={saving}
-                    style={{ fontSize: '0.85rem' }}
-                  >
-                    {saving ? 'Saving...' : 'Save Changes'}
-                  </button>
-                  <button
-                    className="btn"
-                    onClick={cancelEditing}
-                    disabled={saving}
-                    style={{ fontSize: '0.85rem', backgroundColor: '#ecf0f1', color: '#333' }}
-                  >
-                    Cancel
-                  </button>
-                </>
+              {canEdit && (
+                <span style={{ fontSize: '0.8rem', color: '#999' }} title="Double-click any field to edit">
+                  Double-click to edit
+                </span>
               )}
               <button
                 className="btn"
@@ -371,9 +463,7 @@ function InvoiceDetail() {
             </div>
           </div>
 
-          {error && (
-            <div className="error" style={{ marginBottom: '1rem' }}>{error}</div>
-          )}
+          {error && <div className="error" style={{ marginBottom: '1rem' }}>{error}</div>}
 
           {isProcessing && (
             <div className="card">
@@ -391,519 +481,335 @@ function InvoiceDetail() {
             </div>
           )}
 
-          {/* Invoice Header */}
           {!isProcessing && (
             <>
-              {/* Supplier Card */}
+              {/* ── Supplier Card ── */}
               <div className="card">
                 <h3>Supplier</h3>
-                {editing ? (
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-                    <div>
-                      <strong>Name:</strong>
-                      <input style={inputStyle} value={editData.supplierName} onChange={(e) => updateField('supplierName', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>Address:</strong>
-                      <input style={inputStyle} value={editData.supplierAddress} onChange={(e) => updateField('supplierAddress', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>Reg. Number:</strong>
-                      <input style={inputStyle} value={editData.supplierRegNumber} onChange={(e) => updateField('supplierRegNumber', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>VAT Number:</strong>
-                      <input style={inputStyle} value={editData.supplierVatNumber} onChange={(e) => updateField('supplierVatNumber', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>Bank Account:</strong>
-                      <input style={inputStyle} value={editData.supplierBankAccount} onChange={(e) => updateField('supplierBankAccount', e.target.value)} />
-                    </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                  <div>
+                    <strong>Name:</strong><br />
+                    {renderEditable('supplierName')}
                   </div>
-                ) : (
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                    <div>
-                      <strong>Name:</strong><br />{invoice.supplierName || '-'}
-                    </div>
-                    <div>
-                      <strong>Address:</strong><br />{invoice.supplierAddress || '-'}
-                    </div>
-                    {invoice.supplierRegNumber && (
-                      <div>
-                        <strong>Reg. Number:</strong><br />{invoice.supplierRegNumber}
-                      </div>
-                    )}
-                    {invoice.supplierVatNumber && (
-                      <div>
-                        <strong>VAT Number:</strong><br />{invoice.supplierVatNumber}
-                      </div>
-                    )}
-                    {invoice.supplierBankAccount && (
-                      <div>
-                        <strong>Bank Account:</strong><br />{invoice.supplierBankAccount}
-                      </div>
-                    )}
+                  <div>
+                    <strong>Address:</strong><br />
+                    {renderEditable('supplierAddress')}
                   </div>
-                )}
+                  <div>
+                    <strong>Reg. Number:</strong><br />
+                    {renderEditable('supplierRegNumber')}
+                  </div>
+                  <div>
+                    <strong>VAT Number:</strong><br />
+                    {renderEditable('supplierVatNumber')}
+                  </div>
+                  <div>
+                    <strong>Bank Account:</strong><br />
+                    {renderEditable('supplierBankAccount')}
+                  </div>
+                </div>
 
                 {/* Supplier Registry Link */}
-                {!editing && (
-                  <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid #eee' }}>
-                    {editingSupplier ? (
-                      <div>
-                        <strong>Link to supplier registry:</strong>
-                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.5rem' }}>
-                          <select
-                            value={selectedSupplierId}
-                            onChange={(e) => setSelectedSupplierId(e.target.value)}
-                            style={{ flex: 1, maxWidth: '350px', padding: '0.4rem' }}
-                          >
-                            <option value="">— none (unlinked) —</option>
-                            {suppliers.map((s) => (
-                              <option key={s.id} value={s.id}>
-                                {s.name}{s.futursoftSupplierNr ? ` (FS# ${s.futursoftSupplierNr})` : ''}
-                              </option>
-                            ))}
-                          </select>
-                          <button className="btn btn-primary" style={{ fontSize: '0.85rem', padding: '0.35rem 0.75rem' }} onClick={handleSaveSupplier}>Save</button>
-                          <button className="btn" style={{ fontSize: '0.85rem', padding: '0.35rem 0.75rem' }} onClick={() => setEditingSupplier(false)}>Cancel</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                        {invoice.supplierId ? (
-                          <span>
-                            <strong>Linked:</strong>{' '}
-                            <Link to={`/suppliers/${invoice.supplierId}`}>{invoice.supplierName}</Link>
-                          </span>
-                        ) : (
-                          <span style={{ color: '#e67e22' }}>
-                            Not linked to supplier registry
-                          </span>
-                        )}
-                        <button
-                          className="btn"
-                          style={{ fontSize: '0.8rem', padding: '0.25rem 0.6rem', backgroundColor: '#ecf0f1', color: '#333' }}
-                          onClick={() => { setSelectedSupplierId(invoice.supplierId || ''); setEditingSupplier(true); }}
+                <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid #eee' }}>
+                  {editingSupplier ? (
+                    <div>
+                      <strong>Link to supplier registry:</strong>
+                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.5rem' }}>
+                        <select
+                          value={selectedSupplierId}
+                          onChange={(e) => setSelectedSupplierId(e.target.value)}
+                          style={{ flex: 1, maxWidth: '350px', padding: '0.4rem' }}
                         >
-                          {invoice.supplierId ? 'Change' : 'Link Supplier'}
-                        </button>
+                          <option value="">— none (unlinked) —</option>
+                          {suppliers.map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.name}{s.futursoftSupplierNr ? ` (FS# ${s.futursoftSupplierNr})` : ''}
+                            </option>
+                          ))}
+                        </select>
+                        <button className="btn btn-primary" style={{ fontSize: '0.85rem', padding: '0.35rem 0.75rem' }} onClick={handleSaveSupplier}>Save</button>
+                        <button className="btn" style={{ fontSize: '0.85rem', padding: '0.35rem 0.75rem' }} onClick={() => setEditingSupplier(false)}>Cancel</button>
                       </div>
-                    )}
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                      {invoice.supplierId ? (
+                        <span><strong>Linked:</strong>{' '}<Link to={`/suppliers/${invoice.supplierId}`}>{invoice.supplierName}</Link></span>
+                      ) : (
+                        <span style={{ color: '#e67e22' }}>Not linked to supplier registry</span>
+                      )}
+                      <button
+                        className="btn"
+                        style={{ fontSize: '0.8rem', padding: '0.25rem 0.6rem', backgroundColor: '#ecf0f1', color: '#333' }}
+                        onClick={() => { setSelectedSupplierId(invoice.supplierId || ''); setEditingSupplier(true); }}
+                      >
+                        {invoice.supplierId ? 'Change' : 'Link Supplier'}
+                      </button>
+                    </div>
+                  )}
 
-                    {/* Futursoft Supplier Nr — inline edit when linked */}
-                    {invoice.supplierId && (
-                      <div style={{ marginTop: '0.5rem' }}>
-                        {editingFsNr ? (
-                          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                            <strong>Futursoft #:</strong>
-                            <input
-                              type="text"
-                              value={fsNrValue}
-                              onChange={(e) => setFsNrValue(e.target.value)}
-                              placeholder="Enter supplier nr..."
-                              style={{ width: '140px', padding: '0.35rem' }}
-                              onKeyDown={(e) => { if (e.key === 'Enter') handleSaveFsNr(); if (e.key === 'Escape') setEditingFsNr(false); }}
-                              autoFocus
-                            />
-                            <button className="btn btn-primary" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={handleSaveFsNr}>Save</button>
-                            <button className="btn" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={() => setEditingFsNr(false)}>Cancel</button>
-                          </div>
-                        ) : (
-                          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                            {invoice.futursoftSupplierNr ? (
-                              <span style={{ fontSize: '0.9em' }}><strong>Futursoft #:</strong> {invoice.futursoftSupplierNr}</span>
-                            ) : (
-                              <span style={{ color: '#999', fontSize: '0.9em' }}>Futursoft # not resolved</span>
-                            )}
-                            <button
-                              className="btn"
-                              style={{ fontSize: '0.8rem', padding: '0.25rem 0.6rem', backgroundColor: '#ecf0f1', color: '#333' }}
-                              onClick={() => { setFsNrValue(invoice.futursoftSupplierNr || ''); setEditingFsNr(true); }}
-                            >
-                              {invoice.futursoftSupplierNr ? 'Edit' : 'Enter manually'}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
+                  {invoice.supplierId && (
+                    <div style={{ marginTop: '0.5rem' }}>
+                      {editingFsNr ? (
+                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                          <strong>Futursoft #:</strong>
+                          <input
+                            type="text"
+                            value={fsNrValue}
+                            onChange={(e) => setFsNrValue(e.target.value)}
+                            placeholder="Enter supplier nr..."
+                            style={{ width: '140px', padding: '0.35rem' }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') handleSaveFsNr(); if (e.key === 'Escape') setEditingFsNr(false); }}
+                            autoFocus
+                          />
+                          <button className="btn btn-primary" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={handleSaveFsNr}>Save</button>
+                          <button className="btn" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={() => setEditingFsNr(false)}>Cancel</button>
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                          {invoice.futursoftSupplierNr ? (
+                            <span style={{ fontSize: '0.9em' }}><strong>Futursoft #:</strong> {invoice.futursoftSupplierNr}</span>
+                          ) : (
+                            <span style={{ color: '#999', fontSize: '0.9em' }}>Futursoft # not resolved</span>
+                          )}
+                          <button
+                            className="btn"
+                            style={{ fontSize: '0.8rem', padding: '0.25rem 0.6rem', backgroundColor: '#ecf0f1', color: '#333' }}
+                            onClick={() => { setFsNrValue(invoice.futursoftSupplierNr || ''); setEditingFsNr(true); }}
+                          >
+                            {invoice.futursoftSupplierNr ? 'Edit' : 'Enter manually'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
 
-              {/* Invoice Information Card */}
+              {/* ── Invoice Information Card ── */}
               <div className="card">
                 <h3>Invoice Information</h3>
-                {editing ? (
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-                    <div>
-                      <strong>Invoice Number:</strong>
-                      <input style={inputStyle} value={editData.invoiceNumber} onChange={(e) => updateField('invoiceNumber', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>Invoice Date:</strong>
-                      <input type="date" style={inputStyle} value={editData.invoiceDate} onChange={(e) => updateField('invoiceDate', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>Due Date:</strong>
-                      <input type="date" style={inputStyle} value={editData.dueDate} onChange={(e) => updateField('dueDate', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>Currency:</strong>
-                      <input style={inputStyle} value={editData.currency} onChange={(e) => updateField('currency', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>Reference Number:</strong>
-                      <input style={inputStyle} value={editData.referenceNumber} onChange={(e) => updateField('referenceNumber', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>Purchase Order #:</strong>
-                      <input style={inputStyle} value={editData.purchaseOrderNr} onChange={(e) => updateField('purchaseOrderNr', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>Payment Terms:</strong>
-                      <input style={inputStyle} value={editData.paymentTerms} onChange={(e) => updateField('paymentTerms', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>Penalty Rate:</strong>
-                      <input style={inputStyle} value={editData.penaltyRate} onChange={(e) => updateField('penaltyRate', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>Delivery Date:</strong>
-                      <input type="date" style={inputStyle} value={editData.deliveryDate} onChange={(e) => updateField('deliveryDate', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>Delivery Method:</strong>
-                      <input style={inputStyle} value={editData.deliveryMethod} onChange={(e) => updateField('deliveryMethod', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>Delivery Note #:</strong>
-                      <input style={inputStyle} value={editData.deliveryNoteNr} onChange={(e) => updateField('deliveryNoteNr', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>Our Reference:</strong>
-                      <input style={inputStyle} value={editData.buyerReference} onChange={(e) => updateField('buyerReference', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>Their Reference:</strong>
-                      <input style={inputStyle} value={editData.sellerReference} onChange={(e) => updateField('sellerReference', e.target.value)} />
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                    <div>
-                      <strong>Invoice Number:</strong><br />{invoice.invoiceNumber || '-'}
-                    </div>
-                    <div>
-                      <strong>Invoice Date:</strong><br />
-                      {invoice.invoiceDate ? new Date(invoice.invoiceDate).toLocaleDateString() : '-'}
-                    </div>
-                    <div>
-                      <strong>Due Date:</strong><br />
-                      {invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString() : '-'}
-                    </div>
-                    <div>
-                      <strong>Currency:</strong><br />{invoice.currency || '-'}
-                    </div>
-                    {invoice.referenceNumber && (
-                      <div>
-                        <strong>Reference Number:</strong><br />{invoice.referenceNumber}
-                      </div>
-                    )}
-                    {invoice.purchaseOrderNr && (
-                      <div>
-                        <strong>Purchase Order #:</strong><br />{invoice.purchaseOrderNr}
-                      </div>
-                    )}
-                    {invoice.paymentTerms && (
-                      <div>
-                        <strong>Payment Terms:</strong><br />{invoice.paymentTerms}
-                      </div>
-                    )}
-                    {invoice.penaltyRate && (
-                      <div>
-                        <strong>Penalty Rate:</strong><br />{invoice.penaltyRate}
-                      </div>
-                    )}
-                    {invoice.deliveryDate && (
-                      <div>
-                        <strong>Delivery Date:</strong><br />
-                        {new Date(invoice.deliveryDate).toLocaleDateString()}
-                      </div>
-                    )}
-                    {invoice.deliveryMethod && (
-                      <div>
-                        <strong>Delivery Method:</strong><br />{invoice.deliveryMethod}
-                      </div>
-                    )}
-                    {invoice.deliveryNoteNr && (
-                      <div>
-                        <strong>Delivery Note #:</strong><br />{invoice.deliveryNoteNr}
-                      </div>
-                    )}
-                    {invoice.buyerReference && (
-                      <div>
-                        <strong>Our Reference:</strong><br />{invoice.buyerReference}
-                      </div>
-                    )}
-                    {invoice.sellerReference && (
-                      <div>
-                        <strong>Their Reference:</strong><br />{invoice.sellerReference}
-                      </div>
-                    )}
-                  </div>
-                )}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                  <div><strong>Invoice Number:</strong><br />{renderEditable('invoiceNumber')}</div>
+                  <div><strong>Invoice Date:</strong><br />{renderEditable('invoiceDate', formatDate)}</div>
+                  <div><strong>Due Date:</strong><br />{renderEditable('dueDate', formatDate)}</div>
+                  <div><strong>Currency:</strong><br />{renderEditable('currency')}</div>
+                  <div><strong>Reference Number:</strong><br />{renderEditable('referenceNumber')}</div>
+                  <div><strong>Purchase Order #:</strong><br />{renderEditable('purchaseOrderNr')}</div>
+                  <div><strong>Payment Terms:</strong><br />{renderEditable('paymentTerms')}</div>
+                  <div><strong>Penalty Rate:</strong><br />{renderEditable('penaltyRate')}</div>
+                  <div><strong>Delivery Date:</strong><br />{renderEditable('deliveryDate', formatDate)}</div>
+                  <div><strong>Delivery Method:</strong><br />{renderEditable('deliveryMethod')}</div>
+                  <div><strong>Delivery Note #:</strong><br />{renderEditable('deliveryNoteNr')}</div>
+                  <div><strong>Our Reference:</strong><br />{renderEditable('buyerReference')}</div>
+                  <div><strong>Their Reference:</strong><br />{renderEditable('sellerReference')}</div>
+                </div>
               </div>
 
-              {/* Totals Card */}
+              {/* ── Totals Card ── */}
               <div className="card">
                 <h3>Totals</h3>
-                {editing ? (
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
-                    <div>
-                      <strong>Net Total:</strong>
-                      <input type="number" step="0.01" style={inputStyle} value={editData.netTotal} onChange={(e) => updateField('netTotal', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>VAT Total:</strong>
-                      <input type="number" step="0.01" style={inputStyle} value={editData.vatTotal} onChange={(e) => updateField('vatTotal', e.target.value)} />
-                    </div>
-                    <div>
-                      <strong>Gross Total:</strong>
-                      <input type="number" step="0.01" style={inputStyle} value={editData.grossTotal} onChange={(e) => updateField('grossTotal', e.target.value)} />
-                    </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
+                  <div
+                    title={invNetTotal != null ? `Row sum: ${rowNetSum.toFixed(2)}${netMatches ? ' (matches)' : ` (diff: ${(rowNetSum - invNetTotal).toFixed(2)})`}` : ''}
+                    style={{ color: invNetTotal != null && viewLines.length > 0 ? (netMatches ? '#27ae60' : '#e74c3c') : undefined }}
+                  >
+                    <strong>Net Total:</strong><br />
+                    {renderEditable('netTotal', (v) => v != null ? `${Number(v).toFixed(2)} ${invoice.currency || ''}` : '-', { step: '0.01' })}
+                    {invNetTotal != null && viewLines.length > 0 && !netMatches && (
+                      <span style={{ fontSize: '0.8em', display: 'block', marginTop: '0.2rem' }}>
+                        rows: {rowNetSum.toFixed(2)}
+                      </span>
+                    )}
                   </div>
-                ) : (
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
-                    <div
-                      title={invoice.netTotal != null ? `Row sum: ${rowNetSum.toFixed(2)}${netMatches ? ' (matches)' : ` (diff: ${(rowNetSum - invoice.netTotal).toFixed(2)})`}` : ''}
-                      style={{ color: invoice.netTotal != null && viewLines.length > 0 ? (netMatches ? '#27ae60' : '#e74c3c') : undefined, fontWeight: invoice.netTotal != null && viewLines.length > 0 && !netMatches ? 'bold' : undefined }}
-                    >
-                      <strong>Net Total:</strong><br />
-                      {invoice.netTotal != null ? `${invoice.netTotal.toFixed(2)} ${invoice.currency || ''}` : '-'}
-                      {invoice.netTotal != null && viewLines.length > 0 && !netMatches && (
-                        <span style={{ fontSize: '0.8em', display: 'block', marginTop: '0.2rem' }}>
-                          rows: {rowNetSum.toFixed(2)}
-                        </span>
-                      )}
-                    </div>
-                    <div>
-                      <strong>VAT Total:</strong><br />
-                      {invoice.vatTotal != null ? `${invoice.vatTotal.toFixed(2)} ${invoice.currency || ''}` : '-'}
-                    </div>
-                    <div
-                      title={invoice.grossTotal != null ? `Row sum: ${rowGrossSum.toFixed(2)}${grossMatches ? ' (matches)' : ` (diff: ${(rowGrossSum - invoice.grossTotal).toFixed(2)})`}` : ''}
-                      style={{ color: invoice.grossTotal != null && viewLines.length > 0 ? (grossMatches ? '#27ae60' : '#e74c3c') : undefined, fontWeight: invoice.grossTotal != null && viewLines.length > 0 && !grossMatches ? 'bold' : undefined }}
-                    >
-                      <strong>Gross Total:</strong><br />
-                      {invoice.grossTotal != null ? `${invoice.grossTotal.toFixed(2)} ${invoice.currency || ''}` : '-'}
-                      {invoice.grossTotal != null && viewLines.length > 0 && !grossMatches && (
-                        <span style={{ fontSize: '0.8em', display: 'block', marginTop: '0.2rem' }}>
-                          rows: {rowGrossSum.toFixed(2)}
-                        </span>
-                      )}
-                    </div>
+                  <div>
+                    <strong>VAT Total:</strong><br />
+                    {renderEditable('vatTotal', (v) => v != null ? `${Number(v).toFixed(2)} ${invoice.currency || ''}` : '-', { step: '0.01' })}
                   </div>
-                )}
+                  <div
+                    title={invGrossTotal != null ? `Row sum: ${rowGrossSum.toFixed(2)}${grossMatches ? ' (matches)' : ` (diff: ${(rowGrossSum - invGrossTotal).toFixed(2)})`}` : ''}
+                    style={{ color: invGrossTotal != null && viewLines.length > 0 ? (grossMatches ? '#27ae60' : '#e74c3c') : undefined }}
+                  >
+                    <strong>Gross Total:</strong><br />
+                    {renderEditable('grossTotal', (v) => v != null ? `${Number(v).toFixed(2)} ${invoice.currency || ''}` : '-', { step: '0.01' })}
+                    {invGrossTotal != null && viewLines.length > 0 && !grossMatches && (
+                      <span style={{ fontSize: '0.8em', display: 'block', marginTop: '0.2rem' }}>
+                        rows: {rowGrossSum.toFixed(2)}
+                      </span>
+                    )}
+                  </div>
+                </div>
                 <div style={{ marginTop: '0.75rem', color: '#666', fontSize: '0.9em' }}>
                   <strong>Source:</strong> {invoice.sourceType} — {invoice.originalFilename || '-'}
                   {invoice.extractionModel && (
                     <span style={{ marginLeft: '1rem' }}>
                       <strong>Model:</strong> {invoice.extractionModel}
-                      {invoice.extractionRetried && (
-                        <span style={{ color: '#e67e22', marginLeft: '0.5rem' }} title="Required retry with better model">(retried)</span>
-                      )}
-                      {invoice.mathCorrections > 0 && (
-                        <span style={{ color: '#e67e22', marginLeft: '0.5rem' }}>{invoice.mathCorrections} math fix{invoice.mathCorrections > 1 ? 'es' : ''}</span>
-                      )}
-                      {invoice.extractionDurationMs != null && (
-                        <span style={{ marginLeft: '0.5rem' }}>{(invoice.extractionDurationMs / 1000).toFixed(1)}s</span>
-                      )}
+                      {invoice.extractionRetried && <span style={{ color: '#e67e22', marginLeft: '0.5rem' }} title="Required retry with better model">(retried)</span>}
+                      {invoice.mathCorrections > 0 && <span style={{ color: '#e67e22', marginLeft: '0.5rem' }}>{invoice.mathCorrections} math fix{invoice.mathCorrections > 1 ? 'es' : ''}</span>}
+                      {invoice.extractionDurationMs != null && <span style={{ marginLeft: '0.5rem' }}>{(invoice.extractionDurationMs / 1000).toFixed(1)}s</span>}
                     </span>
                   )}
                 </div>
               </div>
 
-              {/* Invoice Lines */}
+              {/* ── Invoice Lines ── */}
               <div className="card" style={{ overflowX: 'auto' }}>
                 <h3>Invoice Lines</h3>
-                {editing ? (
-                  <>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>#</th>
-                          <th>Product Code</th>
-                          <th>Description</th>
-                          <th>Qty</th>
-                          <th>Unit</th>
-                          <th>Unit Price</th>
-                          <th>VAT %</th>
-                          <th>Net</th>
-                          <th>Gross</th>
-                          <th></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {editLines.map((line, idx) => {
-                          const hasError = lineErrors[idx] && lineErrors[idx].length > 0;
-                          const errBorder = hasError ? { border: '1px solid #e74c3c', backgroundColor: '#fff8f8' } : {};
+                {viewLines.length > 0 ? (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Product Code</th>
+                        <th>Description</th>
+                        <th>Qty</th>
+                        <th>Unit</th>
+                        <th>Unit Price</th>
+                        <th>VAT %</th>
+                        <th>Net</th>
+                        <th>Gross</th>
+                        <th>Match</th>
+                        {canEdit && <th></th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {viewLines.map((line, idx) => {
+                        const hasError = lineErrors[idx] && lineErrors[idx].length > 0;
+                        const isEditingThis = editingLineIdx === idx;
+                        const errBorder = hasError ? { border: '1px solid #e74c3c', background: '#fff0f0' } : {};
+                        const origLine = invoice?.lines?.[idx];
+
+                        if (canEdit && isEditingThis) {
+                          // ── Active edit row ──
                           return (
-                            <tr key={idx} style={hasError ? { backgroundColor: '#fff3f3' } : undefined} title={hasError ? lineErrors[idx].join('; ') : undefined}>
-                              <td>{idx + 1}</td>
-                              <td><input style={smallInputStyle} value={line.productCode} onChange={(e) => updateLine(idx, 'productCode', e.target.value)} /></td>
-                              <td><input style={{ ...smallInputStyle, minWidth: '150px' }} value={line.description} onChange={(e) => updateLine(idx, 'description', e.target.value)} /></td>
-                              <td><input type="number" step="any" style={{ ...smallInputStyle, width: '70px', ...errBorder }} value={line.qty} onChange={(e) => updateLine(idx, 'qty', e.target.value)} /></td>
-                              <td><input style={{ ...smallInputStyle, width: '50px' }} value={line.unit} onChange={(e) => updateLine(idx, 'unit', e.target.value)} /></td>
-                              <td><input type="number" step="any" style={{ ...smallInputStyle, width: '90px', ...errBorder }} value={line.unitPrice} onChange={(e) => updateLine(idx, 'unitPrice', e.target.value)} /></td>
-                              <td><input type="number" step="any" style={{ ...smallInputStyle, width: '60px' }} value={line.vatRate} onChange={(e) => updateLine(idx, 'vatRate', e.target.value)} /></td>
-                              <td><input type="number" step="0.01" style={{ ...smallInputStyle, width: '80px' }} value={line.net} onChange={(e) => updateLine(idx, 'net', e.target.value)} /></td>
-                              <td><input type="number" step="0.01" style={{ ...smallInputStyle, width: '80px' }} value={line.gross} onChange={(e) => updateLine(idx, 'gross', e.target.value)} /></td>
+                            <tr
+                              key={idx}
+                              style={{ backgroundColor: hasError ? '#fff0f0' : '#f0f7ff' }}
+                              title={hasError ? lineErrors[idx].join('; ') : undefined}
+                              onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) commitLineEdit(); }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Escape') { e.preventDefault(); cancelLineEdit(); }
+                                if (e.key === 'Enter') { e.preventDefault(); commitLineEdit(); }
+                              }}
+                            >
+                              <td style={{ color: '#888', fontSize: '0.85em' }}>{idx + 1}</td>
+                              <td><input style={cellInputStyle} value={line.productCode} onChange={(e) => updatePendingLine(idx, 'productCode', e.target.value)} /></td>
+                              <td><input style={{ ...cellInputStyle, minWidth: '140px' }} value={line.description} onChange={(e) => updatePendingLine(idx, 'description', e.target.value)} /></td>
+                              <td><input type="number" step="any" style={{ ...cellInputStyle, width: '65px', ...errBorder }} value={line.qty} onChange={(e) => updatePendingLine(idx, 'qty', e.target.value)} /></td>
+                              <td><input style={{ ...cellInputStyle, width: '45px' }} value={line.unit} onChange={(e) => updatePendingLine(idx, 'unit', e.target.value)} /></td>
+                              <td><input type="number" step="any" style={{ ...cellInputStyle, width: '85px', ...errBorder }} value={line.unitPrice} onChange={(e) => updatePendingLine(idx, 'unitPrice', e.target.value)} /></td>
+                              <td><input type="number" step="any" style={{ ...cellInputStyle, width: '55px' }} value={line.vatRate} onChange={(e) => updatePendingLine(idx, 'vatRate', e.target.value)} /></td>
+                              <td><input type="number" step="0.01" style={{ ...cellInputStyle, width: '75px' }} value={line.net} onChange={(e) => updatePendingLine(idx, 'net', e.target.value)} /></td>
+                              <td><input type="number" step="0.01" style={{ ...cellInputStyle, width: '75px' }} value={line.gross} onChange={(e) => updatePendingLine(idx, 'gross', e.target.value)} /></td>
+                              <td><span style={{ color: '#999' }}>—</span></td>
                               <td>
-                                <button
-                                  onClick={() => removeLine(idx)}
-                                  style={{ background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontSize: '1.1rem', padding: '0.2rem' }}
-                                  title="Remove line"
-                                >
-                                  &times;
-                                </button>
+                                <button onClick={() => deleteLine(idx)} style={{ background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontSize: '1.1rem', padding: '0.15rem 0.3rem' }} title="Remove row">×</button>
                               </td>
                             </tr>
                           );
-                        })}
-                      </tbody>
+                        }
+
+                        // ── View row (with optional double-click to edit) ──
+                        return (
+                          <tr
+                            key={origLine?.id || idx}
+                            style={{ backgroundColor: hasError ? '#fff3f3' : undefined }}
+                            title={hasError ? lineErrors[idx].join('; ') : (canEdit ? 'Double-click to edit row' : undefined)}
+                            onDoubleClick={canEdit ? () => startLineEdit(idx) : undefined}
+                          >
+                            <td>{origLine?.rowNo ?? idx + 1}</td>
+                            <td>{line.productCode || '-'}</td>
+                            <td>{line.description || '-'}</td>
+                            <td style={hasError ? { color: '#e74c3c', fontWeight: 'bold' } : undefined}>{line.qty != null && line.qty !== '' ? line.qty : '-'}</td>
+                            <td>{line.unit || '-'}</td>
+                            <td style={hasError ? { color: '#e74c3c', fontWeight: 'bold' } : undefined}>
+                              {line.unitPrice != null && line.unitPrice !== '' ? (typeof line.unitPrice === 'number' ? line.unitPrice.toFixed(4) : Number(line.unitPrice).toFixed(4)) : '-'}
+                            </td>
+                            <td>{line.vatRate != null && line.vatRate !== '' ? `${line.vatRate}%` : '-'}</td>
+                            <td>{line.net != null && line.net !== '' ? Number(line.net).toFixed(2) : '-'}</td>
+                            <td>{line.gross != null && line.gross !== '' ? Number(line.gross).toFixed(2) : '-'}</td>
+                            <td>
+                              {origLine?.matchData ? (
+                                <span className={`status-badge ${origLine.matchData.confidence >= 0.95 ? 'status-approved' : origLine.matchData.confidence >= 0.75 ? 'status-needs_review' : 'status-rejected'}`}>
+                                  {Math.round((origLine.matchData.confidence || 0) * 100)}%
+                                </span>
+                              ) : <span style={{ color: '#999' }}>—</span>}
+                            </td>
+                            {canEdit && (
+                              <td>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); deleteLine(idx); }}
+                                  style={{ background: 'none', border: 'none', color: '#ccc', cursor: 'pointer', fontSize: '1rem', padding: '0.15rem 0.3rem' }}
+                                  onMouseEnter={(e) => { e.currentTarget.style.color = '#e74c3c'; }}
+                                  onMouseLeave={(e) => { e.currentTarget.style.color = '#ccc'; }}
+                                  title="Remove row"
+                                >
+                                  ×
+                                </button>
+                              </td>
+                            )}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    {viewLines.length > 0 && (!netMatches || !grossMatches) && (
                       <tfoot>
-                        <tr style={{ fontWeight: 'bold', borderTop: '2px solid #ccc' }}>
+                        <tr style={{ fontWeight: 'bold', fontSize: '0.9em', borderTop: '2px solid #ccc' }}>
                           <td colSpan={7} style={{ textAlign: 'right' }}>Row sums:</td>
                           <td style={{ color: netMatches ? '#27ae60' : '#e74c3c' }}>{rowNetSum.toFixed(2)}</td>
                           <td style={{ color: grossMatches ? '#27ae60' : '#e74c3c' }}>{rowGrossSum.toFixed(2)}</td>
                           <td></td>
+                          {canEdit && <td></td>}
                         </tr>
                       </tfoot>
-                    </table>
-                    <button
-                      className="btn"
-                      onClick={addLine}
-                      style={{ marginTop: '0.5rem', fontSize: '0.85rem', backgroundColor: '#ecf0f1', color: '#333' }}
-                    >
-                      + Add Row
-                    </button>
-                  </>
+                    )}
+                  </table>
                 ) : (
-                  invoice.lines && invoice.lines.length > 0 ? (
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>#</th>
-                          <th>Product Code</th>
-                          <th>Description</th>
-                          <th>Qty</th>
-                          <th>Unit</th>
-                          <th>Unit Price</th>
-                          <th>VAT %</th>
-                          <th>Net</th>
-                          <th>Gross</th>
-                          <th>Match</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {invoice.lines.map((line, idx) => {
-                          const hasError = lineErrors[idx] && lineErrors[idx].length > 0;
-                          return (
-                            <tr key={line.id} style={hasError ? { backgroundColor: '#fff3f3' } : undefined} title={hasError ? lineErrors[idx].join('; ') : undefined}>
-                              <td>{line.rowNo}</td>
-                              <td>{line.productCode || '-'}</td>
-                              <td>{line.description || '-'}</td>
-                              <td style={hasError ? { color: '#e74c3c', fontWeight: 'bold' } : undefined}>{line.qty != null ? line.qty : '-'}</td>
-                              <td>{line.unit || '-'}</td>
-                              <td style={hasError ? { color: '#e74c3c', fontWeight: 'bold' } : undefined}>{line.unitPrice != null ? line.unitPrice.toFixed(4) : '-'}</td>
-                              <td>{line.vatRate != null ? `${line.vatRate}%` : '-'}</td>
-                              <td>{line.net != null ? line.net.toFixed(2) : '-'}</td>
-                              <td>{line.gross != null ? line.gross.toFixed(2) : '-'}</td>
-                              <td>
-                                {line.matchData ? (
-                                  <span className={`status-badge ${
-                                    line.matchData.confidence >= 0.95 ? 'status-approved' :
-                                    line.matchData.confidence >= 0.75 ? 'status-needs_review' :
-                                    'status-rejected'
-                                  }`}>
-                                    {Math.round((line.matchData.confidence || 0) * 100)}%
-                                  </span>
-                                ) : (
-                                  <span style={{ color: '#999' }}>—</span>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                      {invoice.lines.length > 0 && (!netMatches || !grossMatches) && (
-                        <tfoot>
-                          <tr style={{ fontWeight: 'bold', fontSize: '0.9em', borderTop: '2px solid #ccc' }}>
-                            <td colSpan={7} style={{ textAlign: 'right' }}>Row sums:</td>
-                            <td style={{ color: netMatches ? '#27ae60' : '#e74c3c' }}>{rowNetSum.toFixed(2)}</td>
-                            <td style={{ color: grossMatches ? '#27ae60' : '#e74c3c' }}>{rowGrossSum.toFixed(2)}</td>
-                            <td></td>
-                          </tr>
-                        </tfoot>
-                      )}
-                    </table>
-                  ) : (
-                    <p style={{ color: '#999' }}>No invoice lines.</p>
-                  )
+                  <p style={{ color: '#999' }}>No invoice lines.</p>
+                )}
+                {canEdit && (
+                  <button
+                    className="btn"
+                    onClick={addLine}
+                    style={{ marginTop: '0.5rem', fontSize: '0.85rem', backgroundColor: '#ecf0f1', color: '#333' }}
+                  >
+                    + Add Row
+                  </button>
                 )}
               </div>
 
-              {/* Workflow Actions */}
-              {['needs_review', 'ready', 'approved'].includes(invoice.status) && !editing && (
+              {/* ── Workflow Actions ── */}
+              {['needs_review', 'ready', 'approved'].includes(invoice.status) && (
                 <div className="card">
                   <h3>Workflow Actions</h3>
                   <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                    <Link to={`/invoices/${id}/matching`} className="btn btn-primary">
-                      Row Matching
-                    </Link>
+                    <Link to={`/invoices/${id}/matching`} className="btn btn-primary">Row Matching</Link>
                     {invoice.workflowConfig?.orderProposal && (
-                      <Link to={`/invoices/${id}/proposal`} className="btn" style={{ backgroundColor: '#2980b9', color: 'white' }}>
-                        Order Proposal
-                      </Link>
+                      <Link to={`/invoices/${id}/proposal`} className="btn" style={{ backgroundColor: '#2980b9', color: 'white' }}>Order Proposal</Link>
                     )}
                     {invoice.workflowConfig?.orderConfirmation && (
-                      <button className="btn" style={{ backgroundColor: '#f39c12', color: 'white' }} disabled>
-                        Order Confirmation
-                      </button>
+                      <button className="btn" style={{ backgroundColor: '#f39c12', color: 'white' }} disabled>Order Confirmation</button>
                     )}
                     {invoice.workflowConfig?.order && (
-                      <button className="btn" style={{ backgroundColor: '#e67e22', color: 'white' }} disabled>
-                        Order
-                      </button>
+                      <button className="btn" style={{ backgroundColor: '#e67e22', color: 'white' }} disabled>Order</button>
                     )}
                     {invoice.workflowConfig?.receiving && invoice.purchaseOrderNr && (
-                      <Link to={`/invoices/${id}/receiving`} className="btn" style={{ backgroundColor: '#27ae60', color: 'white' }}>
-                        Receiving Preview
-                      </Link>
+                      <Link to={`/invoices/${id}/receiving`} className="btn" style={{ backgroundColor: '#27ae60', color: 'white' }}>Receiving Preview</Link>
                     )}
                     {invoice.purchaseOrderNr && (
-                      <Link to={`/invoices/${id}/consolidation`} className="btn" style={{ backgroundColor: '#8e44ad', color: 'white' }}>
-                        Cross-Order Consolidation
-                      </Link>
+                      <Link to={`/invoices/${id}/consolidation`} className="btn" style={{ backgroundColor: '#8e44ad', color: 'white' }}>Cross-Order Consolidation</Link>
                     )}
                   </div>
                 </div>
               )}
 
-              {/* Approval Actions */}
-              {!editing && (
-                <ApprovalActions
-                  invoice={invoice}
-                  user={user}
-                  onActionComplete={fetchInvoice}
-                />
-              )}
+              {/* ── Approval Actions ── */}
+              <ApprovalActions invoice={invoice} user={user} onActionComplete={fetchInvoice} />
 
-              {/* Approval History */}
+              {/* ── Approval History ── */}
               <ApprovalHistory invoiceId={id} />
 
-              {/* Processing logs (collapsed by default) */}
+              {/* ── Processing Log ── */}
               {['needs_review', 'ready', 'failed'].includes(invoice.status) && (
                 <details className="card" style={{ cursor: 'pointer' }}>
                   <summary style={{ fontWeight: 'bold', padding: '0.5rem 0' }}>Processing Log</summary>
@@ -912,53 +818,49 @@ function InvoiceDetail() {
               )}
             </>
           )}
+
+          {/* ── Sticky Save Bar ── */}
+          {hasPendingChanges && (
+            <div style={{
+              position: 'sticky',
+              bottom: 0,
+              background: '#fff',
+              borderTop: '2px solid #3498db',
+              padding: '0.75rem 1rem',
+              display: 'flex',
+              gap: '0.75rem',
+              alignItems: 'center',
+              boxShadow: '0 -2px 8px rgba(0,0,0,0.1)',
+              zIndex: 100,
+              marginTop: '1rem',
+            }}>
+              <span style={{ flex: 1, color: '#555', fontSize: '0.9rem' }}>Unsaved changes</span>
+              <button className="btn btn-primary" onClick={saveAll} disabled={saving} style={{ fontSize: '0.85rem' }}>
+                {saving ? 'Saving...' : 'Save Changes'}
+              </button>
+              <button className="btn" onClick={discardAll} disabled={saving} style={{ fontSize: '0.85rem', backgroundColor: '#ecf0f1', color: '#333' }}>
+                Discard
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Resize Handle */}
+        {/* ── Resize Handle ── */}
         {showPdf && (
           <div
             onMouseDown={handleMouseDown}
-            style={{
-              width: '6px',
-              cursor: 'col-resize',
-              backgroundColor: '#ddd',
-              borderRadius: '3px',
-              marginTop: '1rem',
-              marginBottom: '1rem',
-              flexShrink: 0,
-              transition: 'background-color 0.15s',
-            }}
+            style={{ width: '6px', cursor: 'col-resize', backgroundColor: '#ddd', borderRadius: '3px', marginTop: '1rem', marginBottom: '1rem', flexShrink: 0, transition: 'background-color 0.15s' }}
             onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#aaa'; }}
             onMouseLeave={(e) => { if (!isDragging.current) e.currentTarget.style.backgroundColor = '#ddd'; }}
           />
         )}
 
-        {/* Right: PDF Preview Sidebar */}
+        {/* ── PDF Sidebar ── */}
         {showPdf && (
-          <div style={{
-            flex: 1,
-            position: 'sticky',
-            top: '1rem',
-            alignSelf: 'flex-start',
-            height: 'calc(100vh - 5rem)',
-            marginTop: '1rem',
-            border: '1px solid #ddd',
-            borderRadius: '8px',
-            overflow: 'hidden',
-            backgroundColor: '#f5f5f5',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}>
-            {pdfBlobUrl ? (
-              <iframe
-                src={pdfBlobUrl}
-                title="Invoice PDF"
-                style={{ width: '100%', height: '100%', border: 'none' }}
-              />
-            ) : (
-              <p style={{ color: '#999' }}>Loading PDF...</p>
-            )}
+          <div style={{ flex: 1, position: 'sticky', top: '1rem', alignSelf: 'flex-start', height: 'calc(100vh - 5rem)', marginTop: '1rem', border: '1px solid #ddd', borderRadius: '8px', overflow: 'hidden', backgroundColor: '#f5f5f5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {pdfBlobUrl
+              ? <iframe src={pdfBlobUrl} title="Invoice PDF" style={{ width: '100%', height: '100%', border: 'none' }} />
+              : <p style={{ color: '#999' }}>Loading PDF...</p>}
           </div>
         )}
       </div>
