@@ -3,7 +3,7 @@ const pdfParse = require('pdf-parse');
 const { query } = require('../db');
 const openaiExtractor = require('./openaiExtractor');
 const costpocketExtractor = require('./costpocketExtractor');
-const { validate } = require('./validationService');
+const { validate, verifyTotalAgainstPdfText } = require('./validationService');
 const { findSupplier, lookupFutursoftSupplierNr } = require('./supplierService');
 
 const MIN_CONFIDENCE = 0.6; // below this, try CostPocket fallback
@@ -442,6 +442,23 @@ async function processInvoice(invoiceId, pdfBuffer, filename, session) {
       await addLog(invoiceId, 'validation', 'info', 'Validation passed', null);
     }
 
+    // Step 4b: Verify gross total against raw PDF text (ground truth check)
+    let pdfTotalMismatch = false;
+    if (pdfText) {
+      const pdfVerification = verifyTotalAgainstPdfText(extracted, pdfText);
+      if (pdfVerification) {
+        if (pdfVerification.verified) {
+          await addLog(invoiceId, 'pdf_total_check', 'info', pdfVerification.message, null);
+        } else {
+          pdfTotalMismatch = true;
+          await addLog(invoiceId, 'pdf_total_check', 'warn', pdfVerification.message, {
+            extractedGrossTotal: extracted.grossTotal,
+            pdfTextTotal: pdfVerification.pdfTotal,
+          });
+        }
+      }
+    }
+
     // Step 5: Save extracted data to DB
     await saveExtractedData(invoiceId, extracted);
     await addLog(invoiceId, 'normalization', 'info', `Saved: ${(extracted.lines || []).length} lines`, {
@@ -479,10 +496,24 @@ async function processInvoice(invoiceId, pdfBuffer, filename, session) {
     }
 
     // Step 6: Determine final status
-    const hasIssues = !validation.valid || (extracted.confidence || 1) < 0.75 || usedFallback;
+    // Force needs_review if: validation errors, low confidence, fallback used,
+    // any math-related warnings, or PDF total doesn't match extracted total
+    const hasMathWarnings = validation.issues.some(i =>
+      i.field && (i.field.includes('net') || i.field.includes('vat') || i.field.includes('gross') || i.field.includes('Total'))
+    );
+    const hasIssues = !validation.valid || (extracted.confidence || 1) < 0.75 || usedFallback || hasMathWarnings || pdfTotalMismatch;
     const newStatus = hasIssues ? 'needs_review' : 'ready';
     await updateInvoiceStatus(invoiceId, newStatus);
-    await addLog(invoiceId, 'processing_complete', 'info', `Processing complete → ${newStatus}`, null);
+    const reasons = [];
+    if (!validation.valid) reasons.push('validation errors');
+    if ((extracted.confidence || 1) < 0.75) reasons.push(`low confidence (${extracted.confidence})`);
+    if (usedFallback) reasons.push('used fallback extractor');
+    if (hasMathWarnings) reasons.push('math mismatches in totals');
+    if (pdfTotalMismatch) reasons.push('gross total differs from PDF text');
+    await addLog(invoiceId, 'processing_complete', 'info',
+      `Processing complete → ${newStatus}${reasons.length > 0 ? ' (' + reasons.join(', ') + ')' : ''}`,
+      null
+    );
 
   } catch (err) {
     try {

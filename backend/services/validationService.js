@@ -3,11 +3,16 @@
  * Does not throw — returns a list of validation issues.
  */
 
-const TOLERANCE = 0.02; // 2 cent tolerance for rounding
+const BASE_TOLERANCE = 0.02; // 2 cent tolerance per line for rounding
 
-function approxEqual(a, b) {
+function approxEqual(a, b, tolerance) {
   if (a == null || b == null) return true; // can't validate nulls
-  return Math.abs(Number(a) - Number(b)) <= TOLERANCE;
+  return Math.abs(Number(a) - Number(b)) <= (tolerance || BASE_TOLERANCE);
+}
+
+// Scale tolerance for multi-line sums: rounding can accumulate
+function sumTolerance(lineCount) {
+  return Math.max(BASE_TOLERANCE, lineCount * 0.01 + 0.02);
 }
 
 function validate(extracted) {
@@ -78,25 +83,26 @@ function validate(extracted) {
       linesGrossSum += gross || (net + vatAmount);
     }
 
-    if (extracted.netTotal != null && !approxEqual(linesNetSum, extracted.netTotal)) {
+    const sTol = sumTolerance(lines.length);
+    if (extracted.netTotal != null && !approxEqual(linesNetSum, extracted.netTotal, sTol)) {
       issues.push({
         field: 'netTotal',
         severity: 'warn',
-        message: `Net total ${extracted.netTotal} does not match sum of lines ${linesNetSum.toFixed(2)}`,
+        message: `Net total ${extracted.netTotal} does not match sum of lines ${linesNetSum.toFixed(2)} (diff: ${Math.abs(linesNetSum - Number(extracted.netTotal)).toFixed(2)})`,
       });
     }
-    if (extracted.vatTotal != null && !approxEqual(linesVatSum, extracted.vatTotal)) {
+    if (extracted.vatTotal != null && !approxEqual(linesVatSum, extracted.vatTotal, sTol)) {
       issues.push({
         field: 'vatTotal',
         severity: 'warn',
-        message: `VAT total ${extracted.vatTotal} does not match sum of lines ${linesVatSum.toFixed(2)}`,
+        message: `VAT total ${extracted.vatTotal} does not match sum of lines ${linesVatSum.toFixed(2)} (diff: ${Math.abs(linesVatSum - Number(extracted.vatTotal)).toFixed(2)})`,
       });
     }
-    if (extracted.grossTotal != null && !approxEqual(linesGrossSum, extracted.grossTotal)) {
+    if (extracted.grossTotal != null && !approxEqual(linesGrossSum, extracted.grossTotal, sTol)) {
       issues.push({
         field: 'grossTotal',
         severity: 'warn',
-        message: `Gross total ${extracted.grossTotal} does not match sum of lines ${linesGrossSum.toFixed(2)}`,
+        message: `Gross total ${extracted.grossTotal} does not match sum of lines ${linesGrossSum.toFixed(2)} (diff: ${Math.abs(linesGrossSum - Number(extracted.grossTotal)).toFixed(2)})`,
       });
     }
 
@@ -117,4 +123,75 @@ function validate(extracted) {
   return { valid: !hasErrors, issues };
 }
 
-module.exports = { validate };
+/**
+ * Extract candidate total amounts from raw PDF text using regex.
+ * Looks for patterns like "Kokku tasuda: 292,80" or "Total: 1 234.56 EUR".
+ * Returns an array of { label, value } sorted by value descending (largest first).
+ */
+function extractTotalsFromText(pdfText) {
+  if (!pdfText) return [];
+  const results = [];
+
+  // Patterns: label followed by a number (European or US format)
+  // Matches: "Kokku tasuda 292,80", "TOTAL: 1 234.56", "Summa: 292.80 EUR", "Kokku 292,80 €"
+  const patterns = [
+    // Estonian
+    /(?:kokku\s*tasuda|kokku\s*käibemaksuga|kokku\s*km-ga|arve\s*summa|tasuda|kokku\s*€?)\s*[:.]?\s*([\d\s]+[.,]\d{2})/gi,
+    // English
+    /(?:grand\s*total|total\s*due|total\s*amount|invoice\s*total|amount\s*due|balance\s*due|total)\s*[:.]?\s*([\d\s]+[.,]\d{2})/gi,
+    // Finnish
+    /(?:yhteensä|loppusumma|maksettava)\s*[:.]?\s*([\d\s]+[.,]\d{2})/gi,
+    // German
+    /(?:gesamtbetrag|rechnungsbetrag|summe|gesamt)\s*[:.]?\s*([\d\s]+[.,]\d{2})/gi,
+  ];
+
+  for (const re of patterns) {
+    let m;
+    while ((m = re.exec(pdfText)) !== null) {
+      const raw = m[1].replace(/\s/g, '').replace(',', '.');
+      const val = parseFloat(raw);
+      if (!isNaN(val) && val > 0) {
+        results.push({ label: m[0].trim(), value: val });
+      }
+    }
+  }
+
+  // Deduplicate by value (keep first occurrence)
+  const seen = new Set();
+  const unique = results.filter(r => {
+    const key = r.value.toFixed(2);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return unique.sort((a, b) => b.value - a.value);
+}
+
+/**
+ * Verify the extracted grossTotal against totals found in raw PDF text.
+ * Returns { verified, pdfTotal, message } or null if no totals found in text.
+ */
+function verifyTotalAgainstPdfText(extracted, pdfText) {
+  const pdfTotals = extractTotalsFromText(pdfText);
+  if (pdfTotals.length === 0) return null;
+
+  const grossTotal = extracted.grossTotal != null ? Number(extracted.grossTotal) : null;
+  if (grossTotal == null) return null;
+
+  // The largest total in the PDF text is usually the gross total
+  const bestMatch = pdfTotals.find(t => approxEqual(t.value, grossTotal, 0.05));
+  if (bestMatch) {
+    return { verified: true, pdfTotal: bestMatch.value, message: `Gross total ${grossTotal} matches PDF text "${bestMatch.label}"` };
+  }
+
+  // Check if any PDF total matches
+  const closest = pdfTotals[0]; // largest
+  return {
+    verified: false,
+    pdfTotal: closest.value,
+    message: `Gross total ${grossTotal} does NOT match PDF text total ${closest.value} ("${closest.label}") — diff: ${Math.abs(grossTotal - closest.value).toFixed(2)}`,
+  };
+}
+
+module.exports = { validate, verifyTotalAgainstPdfText };
