@@ -665,6 +665,17 @@ function InvoiceDetail() {
                 )}
                 <div style={{ marginTop: '0.75rem', color: '#666', fontSize: '0.9em' }}>
                   <strong>Source:</strong> {invoice.sourceType} — {invoice.originalFilename || '-'}
+                  {invoice.extractionModel && (
+                    <span style={{ marginLeft: '1rem' }}>
+                      <strong>Model:</strong> {invoice.extractionModel}
+                      {invoice.extractionRetried && (
+                        <span style={{ color: '#e67e22', marginLeft: '0.5rem' }} title="Required retry with better model">(retried)</span>
+                      )}
+                      {invoice.mathCorrections > 0 && (
+                        <span style={{ color: '#e67e22', marginLeft: '0.5rem' }}>{invoice.mathCorrections} math fix{invoice.mathCorrections > 1 ? 'es' : ''}</span>
+                      )}
+                    </span>
+                  )}
                 </div>
               </div>
 

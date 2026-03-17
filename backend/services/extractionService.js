@@ -380,6 +380,9 @@ async function processInvoice(invoiceId, pdfBuffer, filename, session) {
     // Retry on math errors uses OPENAI_RETRY_MODEL (default: gpt-4o, more capable).
     let extracted = null;
     let usedFallback = false;
+    let usedRetry = false;
+    let finalModel = null;
+    let totalMathCorrections = 0;
     const primaryModel = process.env.OPENAI_MODEL || 'gpt-4o-mini';
     const retryModel = process.env.OPENAI_RETRY_MODEL || 'gpt-4o';
 
@@ -392,8 +395,11 @@ async function processInvoice(invoiceId, pdfBuffer, filename, session) {
           model: extracted.model,
         });
 
+        finalModel = primaryModel;
+
         // Step 2b: Math auto-correction
         const corrections = correctExtractedMath(extracted);
+        totalMathCorrections = corrections.length;
         if (corrections.length > 0) {
           await addLog(invoiceId, 'math_correction', 'warn',
             `Applied ${corrections.length} math correction(s)`,
@@ -409,6 +415,7 @@ async function processInvoice(invoiceId, pdfBuffer, filename, session) {
 
         // Step 2d: Retry with more capable model if there are math errors
         if (mathErrors.length > 0) {
+          usedRetry = true;
           await addLog(invoiceId, 'extraction_retry', 'info',
             `Retrying with ${retryModel} due to ${mathErrors.length} math error(s)`,
             { errors: mathErrors.map(e => e.message) }
@@ -429,6 +436,8 @@ async function processInvoice(invoiceId, pdfBuffer, filename, session) {
             // Use retry result if it has fewer issues
             if (retryValidation.issues.length < firstValidation.issues.length) {
               extracted = retryResult;
+              finalModel = retryModel;
+              totalMathCorrections = retryCorrections.length;
               await addLog(invoiceId, 'extraction_retry', 'info',
                 `Retry with ${retryModel} improved: ${firstValidation.issues.length} → ${retryValidation.issues.length} issue(s)`,
                 { corrections: retryCorrections }
@@ -509,6 +518,13 @@ async function processInvoice(invoiceId, pdfBuffer, filename, session) {
     await addLog(invoiceId, 'normalization', 'info', `Saved: ${(extracted.lines || []).length} lines`, {
       extractedBy: extracted.extractedBy,
     });
+
+    // Save extraction statistics
+    const modelUsed = finalModel || extracted.model || (usedFallback ? 'costpocket' : null);
+    await query(
+      'UPDATE invoices SET extraction_model = ?, extraction_retried = ?, math_corrections = ? WHERE id = ?',
+      [modelUsed, usedRetry ? 1 : 0, totalMathCorrections, invoiceId]
+    );
 
     // Step 5b: Link to existing supplier if found (no auto-create during extraction)
     try {

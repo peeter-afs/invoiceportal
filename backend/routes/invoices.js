@@ -50,6 +50,9 @@ function normalizeInvoice(row, lines = []) {
     approvalStatus: row.approval_status,
     originalFilename: row.original_filename,
     errorMessage: row.error_message,
+    extractionModel: row.extraction_model || null,
+    extractionRetried: row.extraction_retried === 1,
+    mathCorrections: row.math_corrections || 0,
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -76,7 +79,8 @@ const INVOICE_COLUMNS = `i.id, i.tenant_id, i.status, i.source_type, i.supplier_
   i.purchase_order_nr, i.reference_number, i.penalty_rate, i.payment_terms,
   i.delivery_date, i.delivery_method, i.delivery_note_nr, i.buyer_reference, i.seller_reference,
   i.requires_approval, i.approval_status, i.original_filename,
-  i.error_message, i.created_by, i.created_at, i.updated_at,
+  i.error_message, i.extraction_model, i.extraction_retried, i.math_corrections,
+  i.created_by, i.created_at, i.updated_at,
   s.futursoft_supplier_nr AS supplier_futursoft_nr`;
 
 async function fetchInvoiceLines(invoiceIds) {

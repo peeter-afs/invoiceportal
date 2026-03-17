@@ -97,6 +97,7 @@ function InvoiceList() {
                 <th>Due Date</th>
                 <th>Amount</th>
                 <th>Status</th>
+                <th>Model</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -113,6 +114,11 @@ function InvoiceList() {
                     <span className={`status-badge status-${invoice.status}`}>
                       {invoice.status.replace(/_/g, ' ')}
                     </span>
+                  </td>
+                  <td style={{ fontSize: '0.8rem', color: '#666' }}>
+                    {invoice.extractionModel || '-'}
+                    {invoice.extractionRetried && <span style={{ color: '#e67e22' }} title="Retried with better model"> R</span>}
+                    {invoice.mathCorrections > 0 && <span style={{ color: '#e67e22' }} title={`${invoice.mathCorrections} math correction(s)`}> M{invoice.mathCorrections}</span>}
                   </td>
                   <td>
                     <button
