@@ -20,6 +20,19 @@ const STATUS_LABEL = {
   failed: 'Failed',
 };
 
+const EDITABLE_STATUSES = ['needs_review', 'ready', 'rejected'];
+
+const inputStyle = { padding: '0.35rem', border: '1px solid #ccc', borderRadius: '4px', width: '100%', boxSizing: 'border-box', backgroundColor: '#fafbfc' };
+const numInputStyle = { ...inputStyle, width: '100px' };
+const smallInputStyle = { ...inputStyle, fontSize: '0.85rem', padding: '0.25rem 0.35rem' };
+
+function toDateInputValue(val) {
+  if (!val) return '';
+  const d = new Date(val);
+  if (isNaN(d.getTime())) return '';
+  return d.toISOString().split('T')[0];
+}
+
 function InvoiceDetail() {
   const { logout, user } = useAuth();
   const { id } = useParams();
@@ -28,7 +41,7 @@ function InvoiceDetail() {
   const [error, setError] = useState('');
   const [showPdf, setShowPdf] = useState(false);
   const [pdfBlobUrl, setPdfBlobUrl] = useState(null);
-  const [leftPanelWidth, setLeftPanelWidth] = useState(50); // percentage
+  const [leftPanelWidth, setLeftPanelWidth] = useState(50);
   const isDragging = useRef(false);
   const containerRef = useRef(null);
   const [suppliers, setSuppliers] = useState([]);
@@ -37,7 +50,12 @@ function InvoiceDetail() {
   const [editingFsNr, setEditingFsNr] = useState(false);
   const [fsNrValue, setFsNrValue] = useState('');
 
-  // Resize drag handlers
+  // Inline edit state
+  const [editing, setEditing] = useState(false);
+  const [editData, setEditData] = useState({});
+  const [editLines, setEditLines] = useState([]);
+  const [saving, setSaving] = useState(false);
+
   const handleMouseDown = useCallback((e) => {
     e.preventDefault();
     isDragging.current = true;
@@ -86,7 +104,6 @@ function InvoiceDetail() {
     try {
       await invoiceAPI.update(id, { supplierId: selectedSupplierId || null });
       setEditingSupplier(false);
-      // Refresh suppliers list too (FS nr may have been auto-looked up)
       supplierAPI.getAll().then((res) => setSuppliers(res.data)).catch(() => {});
       fetchInvoice();
     } catch (err) {
@@ -107,7 +124,6 @@ function InvoiceDetail() {
 
   useEffect(() => {
     fetchInvoice();
-    // Poll while processing
     let interval;
     const startPolling = () => {
       interval = setInterval(async () => {
@@ -126,7 +142,6 @@ function InvoiceDetail() {
     return () => clearInterval(interval);
   }, [id, fetchInvoice]);
 
-  // Load PDF blob when sidebar is opened
   useEffect(() => {
     if (!showPdf || pdfBlobUrl) return;
     let revoked = false;
@@ -140,18 +155,135 @@ function InvoiceDetail() {
     return () => { revoked = true; };
   }, [showPdf, id, pdfBlobUrl]);
 
-  // Cleanup blob URL on unmount
   useEffect(() => {
     return () => {
       if (pdfBlobUrl) URL.revokeObjectURL(pdfBlobUrl);
     };
   }, [pdfBlobUrl]);
 
+  // --- Edit mode helpers ---
+  const startEditing = () => {
+    setEditData({
+      supplierName: invoice.supplierName || '',
+      supplierAddress: invoice.supplierAddress || '',
+      supplierRegNumber: invoice.supplierRegNumber || '',
+      supplierVatNumber: invoice.supplierVatNumber || '',
+      supplierBankAccount: invoice.supplierBankAccount || '',
+      invoiceNumber: invoice.invoiceNumber || '',
+      invoiceDate: toDateInputValue(invoice.invoiceDate),
+      dueDate: toDateInputValue(invoice.dueDate),
+      currency: invoice.currency || '',
+      referenceNumber: invoice.referenceNumber || '',
+      purchaseOrderNr: invoice.purchaseOrderNr || '',
+      paymentTerms: invoice.paymentTerms || '',
+      penaltyRate: invoice.penaltyRate || '',
+      deliveryDate: toDateInputValue(invoice.deliveryDate),
+      deliveryMethod: invoice.deliveryMethod || '',
+      deliveryNoteNr: invoice.deliveryNoteNr || '',
+      buyerReference: invoice.buyerReference || '',
+      sellerReference: invoice.sellerReference || '',
+      netTotal: invoice.netTotal != null ? invoice.netTotal : '',
+      vatTotal: invoice.vatTotal != null ? invoice.vatTotal : '',
+      grossTotal: invoice.grossTotal != null ? invoice.grossTotal : '',
+    });
+    setEditLines((invoice.lines || []).map((l) => ({
+      productCode: l.productCode || '',
+      description: l.description || '',
+      qty: l.qty != null ? l.qty : '',
+      unit: l.unit || '',
+      unitPrice: l.unitPrice != null ? l.unitPrice : '',
+      vatRate: l.vatRate != null ? l.vatRate : '',
+      net: l.net != null ? l.net : '',
+      gross: l.gross != null ? l.gross : '',
+    })));
+    setEditing(true);
+  };
+
+  const cancelEditing = () => {
+    setEditing(false);
+    setEditData({});
+    setEditLines([]);
+  };
+
+  const updateField = (field, value) => {
+    setEditData((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const updateLine = (idx, field, value) => {
+    setEditLines((prev) => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], [field]: value };
+      // Auto-calculate net when qty or unitPrice change
+      if (field === 'qty' || field === 'unitPrice') {
+        const q = parseFloat(field === 'qty' ? value : next[idx].qty);
+        const p = parseFloat(field === 'unitPrice' ? value : next[idx].unitPrice);
+        if (!isNaN(q) && !isNaN(p)) {
+          next[idx].net = Math.round(q * p * 100) / 100;
+        }
+      }
+      // Auto-calculate gross when net or vatRate change
+      if (field === 'net' || field === 'vatRate' || field === 'qty' || field === 'unitPrice') {
+        const n = parseFloat(next[idx].net);
+        const vr = parseFloat(next[idx].vatRate);
+        if (!isNaN(n) && !isNaN(vr)) {
+          next[idx].gross = Math.round(n * (1 + vr / 100) * 100) / 100;
+        }
+      }
+      return next;
+    });
+  };
+
+  const addLine = () => {
+    setEditLines((prev) => [...prev, {
+      productCode: '', description: '', qty: '', unit: '',
+      unitPrice: '', vatRate: '', net: '', gross: '',
+    }]);
+  };
+
+  const removeLine = (idx) => {
+    setEditLines((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleSaveEdit = async () => {
+    setSaving(true);
+    setError('');
+    try {
+      const payload = { ...editData };
+      // Convert numeric fields
+      for (const k of ['netTotal', 'vatTotal', 'grossTotal']) {
+        payload[k] = payload[k] !== '' ? Number(payload[k]) : null;
+      }
+      // Convert date fields — send empty as null
+      for (const k of ['invoiceDate', 'dueDate', 'deliveryDate']) {
+        payload[k] = payload[k] || null;
+      }
+      payload.lines = editLines.map((l) => ({
+        productCode: l.productCode || null,
+        description: l.description || null,
+        qty: l.qty !== '' ? Number(l.qty) : null,
+        unit: l.unit || null,
+        unitPrice: l.unitPrice !== '' ? Number(l.unitPrice) : null,
+        vatRate: l.vatRate !== '' ? Number(l.vatRate) : null,
+        net: l.net !== '' ? Number(l.net) : null,
+        vatAmount: l.vatRate !== '' && l.net !== '' ? Math.round(Number(l.net) * Number(l.vatRate) / 100 * 100) / 100 : null,
+        gross: l.gross !== '' ? Number(l.gross) : null,
+      }));
+      await invoiceAPI.update(id, payload);
+      setEditing(false);
+      fetchInvoice();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to save changes');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (loading) return <div className="container"><p>Loading...</p></div>;
-  if (error) return <div className="container"><div className="error">{error}</div></div>;
+  if (error && !invoice) return <div className="container"><div className="error">{error}</div></div>;
   if (!invoice) return null;
 
   const isProcessing = ['queued', 'processing'].includes(invoice.status);
+  const canEdit = EDITABLE_STATUSES.includes(invoice.status);
 
   return (
     <div>
@@ -171,6 +303,35 @@ function InvoiceDetail() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', marginTop: '1rem' }}>
             <h2>Invoice Detail</h2>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              {canEdit && !editing && (
+                <button
+                  className="btn btn-primary"
+                  onClick={startEditing}
+                  style={{ fontSize: '0.85rem' }}
+                >
+                  Edit
+                </button>
+              )}
+              {editing && (
+                <>
+                  <button
+                    className="btn btn-primary"
+                    onClick={handleSaveEdit}
+                    disabled={saving}
+                    style={{ fontSize: '0.85rem' }}
+                  >
+                    {saving ? 'Saving...' : 'Save Changes'}
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={cancelEditing}
+                    disabled={saving}
+                    style={{ fontSize: '0.85rem', backgroundColor: '#ecf0f1', color: '#333' }}
+                  >
+                    Cancel
+                  </button>
+                </>
+              )}
               <button
                 className="btn"
                 onClick={() => setShowPdf(!showPdf)}
@@ -183,6 +344,10 @@ function InvoiceDetail() {
               </span>
             </div>
           </div>
+
+          {error && (
+            <div className="error" style={{ marginBottom: '1rem' }}>{error}</div>
+          )}
 
           {isProcessing && (
             <div className="card">
@@ -203,255 +368,413 @@ function InvoiceDetail() {
           {/* Invoice Header */}
           {!isProcessing && (
             <>
+              {/* Supplier Card */}
               <div className="card">
                 <h3>Supplier</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                  <div>
-                    <strong>Name:</strong><br />{invoice.supplierName || '-'}
+                {editing ? (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                    <div>
+                      <strong>Name:</strong>
+                      <input style={inputStyle} value={editData.supplierName} onChange={(e) => updateField('supplierName', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>Address:</strong>
+                      <input style={inputStyle} value={editData.supplierAddress} onChange={(e) => updateField('supplierAddress', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>Reg. Number:</strong>
+                      <input style={inputStyle} value={editData.supplierRegNumber} onChange={(e) => updateField('supplierRegNumber', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>VAT Number:</strong>
+                      <input style={inputStyle} value={editData.supplierVatNumber} onChange={(e) => updateField('supplierVatNumber', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>Bank Account:</strong>
+                      <input style={inputStyle} value={editData.supplierBankAccount} onChange={(e) => updateField('supplierBankAccount', e.target.value)} />
+                    </div>
                   </div>
-                  <div>
-                    <strong>Address:</strong><br />{invoice.supplierAddress || '-'}
+                ) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                    <div>
+                      <strong>Name:</strong><br />{invoice.supplierName || '-'}
+                    </div>
+                    <div>
+                      <strong>Address:</strong><br />{invoice.supplierAddress || '-'}
+                    </div>
+                    {invoice.supplierRegNumber && (
+                      <div>
+                        <strong>Reg. Number:</strong><br />{invoice.supplierRegNumber}
+                      </div>
+                    )}
+                    {invoice.supplierVatNumber && (
+                      <div>
+                        <strong>VAT Number:</strong><br />{invoice.supplierVatNumber}
+                      </div>
+                    )}
+                    {invoice.supplierBankAccount && (
+                      <div>
+                        <strong>Bank Account:</strong><br />{invoice.supplierBankAccount}
+                      </div>
+                    )}
                   </div>
-                  {invoice.supplierRegNumber && (
-                    <div>
-                      <strong>Reg. Number:</strong><br />{invoice.supplierRegNumber}
-                    </div>
-                  )}
-                  {invoice.supplierVatNumber && (
-                    <div>
-                      <strong>VAT Number:</strong><br />{invoice.supplierVatNumber}
-                    </div>
-                  )}
-                  {invoice.supplierBankAccount && (
-                    <div>
-                      <strong>Bank Account:</strong><br />{invoice.supplierBankAccount}
-                    </div>
-                  )}
-                </div>
+                )}
 
                 {/* Supplier Registry Link */}
-                <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid #eee' }}>
-                  {editingSupplier ? (
-                    <div>
-                      <strong>Link to supplier registry:</strong>
-                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.5rem' }}>
-                        <select
-                          value={selectedSupplierId}
-                          onChange={(e) => setSelectedSupplierId(e.target.value)}
-                          style={{ flex: 1, maxWidth: '350px', padding: '0.4rem' }}
-                        >
-                          <option value="">— none (unlinked) —</option>
-                          {suppliers.map((s) => (
-                            <option key={s.id} value={s.id}>
-                              {s.name}{s.futursoftSupplierNr ? ` (FS# ${s.futursoftSupplierNr})` : ''}
-                            </option>
-                          ))}
-                        </select>
-                        <button className="btn btn-primary" style={{ fontSize: '0.85rem', padding: '0.35rem 0.75rem' }} onClick={handleSaveSupplier}>Save</button>
-                        <button className="btn" style={{ fontSize: '0.85rem', padding: '0.35rem 0.75rem' }} onClick={() => setEditingSupplier(false)}>Cancel</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                      {invoice.supplierId ? (
-                        <span>
-                          <strong>Linked:</strong>{' '}
-                          <Link to={`/suppliers/${invoice.supplierId}`}>{invoice.supplierName}</Link>
-                        </span>
-                      ) : (
-                        <span style={{ color: '#e67e22' }}>
-                          Not linked to supplier registry
-                        </span>
-                      )}
-                      <button
-                        className="btn"
-                        style={{ fontSize: '0.8rem', padding: '0.25rem 0.6rem', backgroundColor: '#ecf0f1', color: '#333' }}
-                        onClick={() => { setSelectedSupplierId(invoice.supplierId || ''); setEditingSupplier(true); }}
-                      >
-                        {invoice.supplierId ? 'Change' : 'Link Supplier'}
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Futursoft Supplier Nr — inline edit when linked */}
-                  {invoice.supplierId && (
-                    <div style={{ marginTop: '0.5rem' }}>
-                      {editingFsNr ? (
-                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                          <strong>Futursoft #:</strong>
-                          <input
-                            type="text"
-                            value={fsNrValue}
-                            onChange={(e) => setFsNrValue(e.target.value)}
-                            placeholder="Enter supplier nr..."
-                            style={{ width: '140px', padding: '0.35rem' }}
-                            onKeyDown={(e) => { if (e.key === 'Enter') handleSaveFsNr(); if (e.key === 'Escape') setEditingFsNr(false); }}
-                            autoFocus
-                          />
-                          <button className="btn btn-primary" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={handleSaveFsNr}>Save</button>
-                          <button className="btn" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={() => setEditingFsNr(false)}>Cancel</button>
-                        </div>
-                      ) : (
-                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                          {invoice.futursoftSupplierNr ? (
-                            <span style={{ fontSize: '0.9em' }}><strong>Futursoft #:</strong> {invoice.futursoftSupplierNr}</span>
-                          ) : (
-                            <span style={{ color: '#999', fontSize: '0.9em' }}>Futursoft # not resolved</span>
-                          )}
-                          <button
-                            className="btn"
-                            style={{ fontSize: '0.8rem', padding: '0.25rem 0.6rem', backgroundColor: '#ecf0f1', color: '#333' }}
-                            onClick={() => { setFsNrValue(invoice.futursoftSupplierNr || ''); setEditingFsNr(true); }}
+                {!editing && (
+                  <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid #eee' }}>
+                    {editingSupplier ? (
+                      <div>
+                        <strong>Link to supplier registry:</strong>
+                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.5rem' }}>
+                          <select
+                            value={selectedSupplierId}
+                            onChange={(e) => setSelectedSupplierId(e.target.value)}
+                            style={{ flex: 1, maxWidth: '350px', padding: '0.4rem' }}
                           >
-                            {invoice.futursoftSupplierNr ? 'Edit' : 'Enter manually'}
-                          </button>
+                            <option value="">— none (unlinked) —</option>
+                            {suppliers.map((s) => (
+                              <option key={s.id} value={s.id}>
+                                {s.name}{s.futursoftSupplierNr ? ` (FS# ${s.futursoftSupplierNr})` : ''}
+                              </option>
+                            ))}
+                          </select>
+                          <button className="btn btn-primary" style={{ fontSize: '0.85rem', padding: '0.35rem 0.75rem' }} onClick={handleSaveSupplier}>Save</button>
+                          <button className="btn" style={{ fontSize: '0.85rem', padding: '0.35rem 0.75rem' }} onClick={() => setEditingSupplier(false)}>Cancel</button>
                         </div>
-                      )}
-                    </div>
-                  )}
-                </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                        {invoice.supplierId ? (
+                          <span>
+                            <strong>Linked:</strong>{' '}
+                            <Link to={`/suppliers/${invoice.supplierId}`}>{invoice.supplierName}</Link>
+                          </span>
+                        ) : (
+                          <span style={{ color: '#e67e22' }}>
+                            Not linked to supplier registry
+                          </span>
+                        )}
+                        <button
+                          className="btn"
+                          style={{ fontSize: '0.8rem', padding: '0.25rem 0.6rem', backgroundColor: '#ecf0f1', color: '#333' }}
+                          onClick={() => { setSelectedSupplierId(invoice.supplierId || ''); setEditingSupplier(true); }}
+                        >
+                          {invoice.supplierId ? 'Change' : 'Link Supplier'}
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Futursoft Supplier Nr — inline edit when linked */}
+                    {invoice.supplierId && (
+                      <div style={{ marginTop: '0.5rem' }}>
+                        {editingFsNr ? (
+                          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                            <strong>Futursoft #:</strong>
+                            <input
+                              type="text"
+                              value={fsNrValue}
+                              onChange={(e) => setFsNrValue(e.target.value)}
+                              placeholder="Enter supplier nr..."
+                              style={{ width: '140px', padding: '0.35rem' }}
+                              onKeyDown={(e) => { if (e.key === 'Enter') handleSaveFsNr(); if (e.key === 'Escape') setEditingFsNr(false); }}
+                              autoFocus
+                            />
+                            <button className="btn btn-primary" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={handleSaveFsNr}>Save</button>
+                            <button className="btn" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={() => setEditingFsNr(false)}>Cancel</button>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                            {invoice.futursoftSupplierNr ? (
+                              <span style={{ fontSize: '0.9em' }}><strong>Futursoft #:</strong> {invoice.futursoftSupplierNr}</span>
+                            ) : (
+                              <span style={{ color: '#999', fontSize: '0.9em' }}>Futursoft # not resolved</span>
+                            )}
+                            <button
+                              className="btn"
+                              style={{ fontSize: '0.8rem', padding: '0.25rem 0.6rem', backgroundColor: '#ecf0f1', color: '#333' }}
+                              onClick={() => { setFsNrValue(invoice.futursoftSupplierNr || ''); setEditingFsNr(true); }}
+                            >
+                              {invoice.futursoftSupplierNr ? 'Edit' : 'Enter manually'}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
+              {/* Invoice Information Card */}
               <div className="card">
                 <h3>Invoice Information</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                  <div>
-                    <strong>Invoice Number:</strong><br />{invoice.invoiceNumber || '-'}
+                {editing ? (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                    <div>
+                      <strong>Invoice Number:</strong>
+                      <input style={inputStyle} value={editData.invoiceNumber} onChange={(e) => updateField('invoiceNumber', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>Invoice Date:</strong>
+                      <input type="date" style={inputStyle} value={editData.invoiceDate} onChange={(e) => updateField('invoiceDate', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>Due Date:</strong>
+                      <input type="date" style={inputStyle} value={editData.dueDate} onChange={(e) => updateField('dueDate', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>Currency:</strong>
+                      <input style={inputStyle} value={editData.currency} onChange={(e) => updateField('currency', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>Reference Number:</strong>
+                      <input style={inputStyle} value={editData.referenceNumber} onChange={(e) => updateField('referenceNumber', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>Purchase Order #:</strong>
+                      <input style={inputStyle} value={editData.purchaseOrderNr} onChange={(e) => updateField('purchaseOrderNr', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>Payment Terms:</strong>
+                      <input style={inputStyle} value={editData.paymentTerms} onChange={(e) => updateField('paymentTerms', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>Penalty Rate:</strong>
+                      <input style={inputStyle} value={editData.penaltyRate} onChange={(e) => updateField('penaltyRate', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>Delivery Date:</strong>
+                      <input type="date" style={inputStyle} value={editData.deliveryDate} onChange={(e) => updateField('deliveryDate', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>Delivery Method:</strong>
+                      <input style={inputStyle} value={editData.deliveryMethod} onChange={(e) => updateField('deliveryMethod', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>Delivery Note #:</strong>
+                      <input style={inputStyle} value={editData.deliveryNoteNr} onChange={(e) => updateField('deliveryNoteNr', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>Our Reference:</strong>
+                      <input style={inputStyle} value={editData.buyerReference} onChange={(e) => updateField('buyerReference', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>Their Reference:</strong>
+                      <input style={inputStyle} value={editData.sellerReference} onChange={(e) => updateField('sellerReference', e.target.value)} />
+                    </div>
                   </div>
-                  <div>
-                    <strong>Invoice Date:</strong><br />
-                    {invoice.invoiceDate ? new Date(invoice.invoiceDate).toLocaleDateString() : '-'}
+                ) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                    <div>
+                      <strong>Invoice Number:</strong><br />{invoice.invoiceNumber || '-'}
+                    </div>
+                    <div>
+                      <strong>Invoice Date:</strong><br />
+                      {invoice.invoiceDate ? new Date(invoice.invoiceDate).toLocaleDateString() : '-'}
+                    </div>
+                    <div>
+                      <strong>Due Date:</strong><br />
+                      {invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString() : '-'}
+                    </div>
+                    <div>
+                      <strong>Currency:</strong><br />{invoice.currency || '-'}
+                    </div>
+                    {invoice.referenceNumber && (
+                      <div>
+                        <strong>Reference Number:</strong><br />{invoice.referenceNumber}
+                      </div>
+                    )}
+                    {invoice.purchaseOrderNr && (
+                      <div>
+                        <strong>Purchase Order #:</strong><br />{invoice.purchaseOrderNr}
+                      </div>
+                    )}
+                    {invoice.paymentTerms && (
+                      <div>
+                        <strong>Payment Terms:</strong><br />{invoice.paymentTerms}
+                      </div>
+                    )}
+                    {invoice.penaltyRate && (
+                      <div>
+                        <strong>Penalty Rate:</strong><br />{invoice.penaltyRate}
+                      </div>
+                    )}
+                    {invoice.deliveryDate && (
+                      <div>
+                        <strong>Delivery Date:</strong><br />
+                        {new Date(invoice.deliveryDate).toLocaleDateString()}
+                      </div>
+                    )}
+                    {invoice.deliveryMethod && (
+                      <div>
+                        <strong>Delivery Method:</strong><br />{invoice.deliveryMethod}
+                      </div>
+                    )}
+                    {invoice.deliveryNoteNr && (
+                      <div>
+                        <strong>Delivery Note #:</strong><br />{invoice.deliveryNoteNr}
+                      </div>
+                    )}
+                    {invoice.buyerReference && (
+                      <div>
+                        <strong>Our Reference:</strong><br />{invoice.buyerReference}
+                      </div>
+                    )}
+                    {invoice.sellerReference && (
+                      <div>
+                        <strong>Their Reference:</strong><br />{invoice.sellerReference}
+                      </div>
+                    )}
                   </div>
-                  <div>
-                    <strong>Due Date:</strong><br />
-                    {invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString() : '-'}
-                  </div>
-                  <div>
-                    <strong>Currency:</strong><br />{invoice.currency || '-'}
-                  </div>
-                  {invoice.referenceNumber && (
-                    <div>
-                      <strong>Reference Number:</strong><br />{invoice.referenceNumber}
-                    </div>
-                  )}
-                  {invoice.purchaseOrderNr && (
-                    <div>
-                      <strong>Purchase Order #:</strong><br />{invoice.purchaseOrderNr}
-                    </div>
-                  )}
-                  {invoice.paymentTerms && (
-                    <div>
-                      <strong>Payment Terms:</strong><br />{invoice.paymentTerms}
-                    </div>
-                  )}
-                  {invoice.penaltyRate && (
-                    <div>
-                      <strong>Penalty Rate:</strong><br />{invoice.penaltyRate}
-                    </div>
-                  )}
-                  {invoice.deliveryDate && (
-                    <div>
-                      <strong>Delivery Date:</strong><br />
-                      {new Date(invoice.deliveryDate).toLocaleDateString()}
-                    </div>
-                  )}
-                  {invoice.deliveryMethod && (
-                    <div>
-                      <strong>Delivery Method:</strong><br />{invoice.deliveryMethod}
-                    </div>
-                  )}
-                  {invoice.deliveryNoteNr && (
-                    <div>
-                      <strong>Delivery Note #:</strong><br />{invoice.deliveryNoteNr}
-                    </div>
-                  )}
-                  {invoice.buyerReference && (
-                    <div>
-                      <strong>Our Reference:</strong><br />{invoice.buyerReference}
-                    </div>
-                  )}
-                  {invoice.sellerReference && (
-                    <div>
-                      <strong>Their Reference:</strong><br />{invoice.sellerReference}
-                    </div>
-                  )}
-                </div>
+                )}
               </div>
 
+              {/* Totals Card */}
               <div className="card">
                 <h3>Totals</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
-                  <div>
-                    <strong>Net Total:</strong><br />
-                    {invoice.netTotal != null ? `${invoice.netTotal.toFixed(2)} ${invoice.currency || ''}` : '-'}
+                {editing ? (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
+                    <div>
+                      <strong>Net Total:</strong>
+                      <input type="number" step="0.01" style={inputStyle} value={editData.netTotal} onChange={(e) => updateField('netTotal', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>VAT Total:</strong>
+                      <input type="number" step="0.01" style={inputStyle} value={editData.vatTotal} onChange={(e) => updateField('vatTotal', e.target.value)} />
+                    </div>
+                    <div>
+                      <strong>Gross Total:</strong>
+                      <input type="number" step="0.01" style={inputStyle} value={editData.grossTotal} onChange={(e) => updateField('grossTotal', e.target.value)} />
+                    </div>
                   </div>
-                  <div>
-                    <strong>VAT Total:</strong><br />
-                    {invoice.vatTotal != null ? `${invoice.vatTotal.toFixed(2)} ${invoice.currency || ''}` : '-'}
+                ) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
+                    <div>
+                      <strong>Net Total:</strong><br />
+                      {invoice.netTotal != null ? `${invoice.netTotal.toFixed(2)} ${invoice.currency || ''}` : '-'}
+                    </div>
+                    <div>
+                      <strong>VAT Total:</strong><br />
+                      {invoice.vatTotal != null ? `${invoice.vatTotal.toFixed(2)} ${invoice.currency || ''}` : '-'}
+                    </div>
+                    <div>
+                      <strong>Gross Total:</strong><br />
+                      {invoice.grossTotal != null ? `${invoice.grossTotal.toFixed(2)} ${invoice.currency || ''}` : '-'}
+                    </div>
                   </div>
-                  <div>
-                    <strong>Gross Total:</strong><br />
-                    {invoice.grossTotal != null ? `${invoice.grossTotal.toFixed(2)} ${invoice.currency || ''}` : '-'}
-                  </div>
-                </div>
+                )}
                 <div style={{ marginTop: '0.75rem', color: '#666', fontSize: '0.9em' }}>
                   <strong>Source:</strong> {invoice.sourceType} — {invoice.originalFilename || '-'}
                 </div>
               </div>
 
               {/* Invoice Lines */}
-              {invoice.lines && invoice.lines.length > 0 && (
-                <div className="card" style={{ overflowX: 'auto' }}>
-                  <h3>Invoice Lines</h3>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>#</th>
-                        <th>Product Code</th>
-                        <th>Description</th>
-                        <th>Qty</th>
-                        <th>Unit</th>
-                        <th>Unit Price</th>
-                        <th>VAT %</th>
-                        <th>Net</th>
-                        <th>Gross</th>
-                        <th>Match</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {invoice.lines.map((line) => (
-                        <tr key={line.id}>
-                          <td>{line.rowNo}</td>
-                          <td>{line.productCode || '-'}</td>
-                          <td>{line.description || '-'}</td>
-                          <td>{line.qty != null ? line.qty : '-'}</td>
-                          <td>{line.unit || '-'}</td>
-                          <td>{line.unitPrice != null ? line.unitPrice.toFixed(4) : '-'}</td>
-                          <td>{line.vatRate != null ? `${line.vatRate}%` : '-'}</td>
-                          <td>{line.net != null ? line.net.toFixed(2) : '-'}</td>
-                          <td>{line.gross != null ? line.gross.toFixed(2) : '-'}</td>
-                          <td>
-                            {line.matchData ? (
-                              <span className={`status-badge ${
-                                line.matchData.confidence >= 0.95 ? 'status-approved' :
-                                line.matchData.confidence >= 0.75 ? 'status-needs_review' :
-                                'status-rejected'
-                              }`}>
-                                {Math.round((line.matchData.confidence || 0) * 100)}%
-                              </span>
-                            ) : (
-                              <span style={{ color: '#999' }}>—</span>
-                            )}
-                          </td>
+              <div className="card" style={{ overflowX: 'auto' }}>
+                <h3>Invoice Lines</h3>
+                {editing ? (
+                  <>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>Product Code</th>
+                          <th>Description</th>
+                          <th>Qty</th>
+                          <th>Unit</th>
+                          <th>Unit Price</th>
+                          <th>VAT %</th>
+                          <th>Net</th>
+                          <th>Gross</th>
+                          <th></th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                      </thead>
+                      <tbody>
+                        {editLines.map((line, idx) => (
+                          <tr key={idx}>
+                            <td>{idx + 1}</td>
+                            <td><input style={smallInputStyle} value={line.productCode} onChange={(e) => updateLine(idx, 'productCode', e.target.value)} /></td>
+                            <td><input style={{ ...smallInputStyle, minWidth: '150px' }} value={line.description} onChange={(e) => updateLine(idx, 'description', e.target.value)} /></td>
+                            <td><input type="number" step="any" style={{ ...smallInputStyle, width: '70px' }} value={line.qty} onChange={(e) => updateLine(idx, 'qty', e.target.value)} /></td>
+                            <td><input style={{ ...smallInputStyle, width: '50px' }} value={line.unit} onChange={(e) => updateLine(idx, 'unit', e.target.value)} /></td>
+                            <td><input type="number" step="any" style={{ ...smallInputStyle, width: '90px' }} value={line.unitPrice} onChange={(e) => updateLine(idx, 'unitPrice', e.target.value)} /></td>
+                            <td><input type="number" step="any" style={{ ...smallInputStyle, width: '60px' }} value={line.vatRate} onChange={(e) => updateLine(idx, 'vatRate', e.target.value)} /></td>
+                            <td><input type="number" step="0.01" style={{ ...smallInputStyle, width: '80px' }} value={line.net} onChange={(e) => updateLine(idx, 'net', e.target.value)} /></td>
+                            <td><input type="number" step="0.01" style={{ ...smallInputStyle, width: '80px' }} value={line.gross} onChange={(e) => updateLine(idx, 'gross', e.target.value)} /></td>
+                            <td>
+                              <button
+                                onClick={() => removeLine(idx)}
+                                style={{ background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontSize: '1.1rem', padding: '0.2rem' }}
+                                title="Remove line"
+                              >
+                                &times;
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <button
+                      className="btn"
+                      onClick={addLine}
+                      style={{ marginTop: '0.5rem', fontSize: '0.85rem', backgroundColor: '#ecf0f1', color: '#333' }}
+                    >
+                      + Add Row
+                    </button>
+                  </>
+                ) : (
+                  invoice.lines && invoice.lines.length > 0 ? (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>Product Code</th>
+                          <th>Description</th>
+                          <th>Qty</th>
+                          <th>Unit</th>
+                          <th>Unit Price</th>
+                          <th>VAT %</th>
+                          <th>Net</th>
+                          <th>Gross</th>
+                          <th>Match</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {invoice.lines.map((line) => (
+                          <tr key={line.id}>
+                            <td>{line.rowNo}</td>
+                            <td>{line.productCode || '-'}</td>
+                            <td>{line.description || '-'}</td>
+                            <td>{line.qty != null ? line.qty : '-'}</td>
+                            <td>{line.unit || '-'}</td>
+                            <td>{line.unitPrice != null ? line.unitPrice.toFixed(4) : '-'}</td>
+                            <td>{line.vatRate != null ? `${line.vatRate}%` : '-'}</td>
+                            <td>{line.net != null ? line.net.toFixed(2) : '-'}</td>
+                            <td>{line.gross != null ? line.gross.toFixed(2) : '-'}</td>
+                            <td>
+                              {line.matchData ? (
+                                <span className={`status-badge ${
+                                  line.matchData.confidence >= 0.95 ? 'status-approved' :
+                                  line.matchData.confidence >= 0.75 ? 'status-needs_review' :
+                                  'status-rejected'
+                                }`}>
+                                  {Math.round((line.matchData.confidence || 0) * 100)}%
+                                </span>
+                              ) : (
+                                <span style={{ color: '#999' }}>—</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p style={{ color: '#999' }}>No invoice lines.</p>
+                  )
+                )}
+              </div>
 
               {/* Workflow Actions */}
-              {['needs_review', 'ready', 'approved'].includes(invoice.status) && (
+              {['needs_review', 'ready', 'approved'].includes(invoice.status) && !editing && (
                 <div className="card">
                   <h3>Workflow Actions</h3>
                   <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
@@ -488,11 +811,13 @@ function InvoiceDetail() {
               )}
 
               {/* Approval Actions */}
-              <ApprovalActions
-                invoice={invoice}
-                user={user}
-                onActionComplete={fetchInvoice}
-              />
+              {!editing && (
+                <ApprovalActions
+                  invoice={invoice}
+                  user={user}
+                  onActionComplete={fetchInvoice}
+                />
+              )}
 
               {/* Approval History */}
               <ApprovalHistory invoiceId={id} />

@@ -272,6 +272,7 @@ router.put('/:id', auth, async (req, res) => {
         ['supplierAddress', 'supplier_address'],
         ['supplierRegNumber', 'supplier_reg_number'],
         ['supplierBankAccount', 'supplier_bank_account'],
+        ['supplierVatNumber', 'supplier_vat_number'],
         ['invoiceNumber', 'invoice_number'],
         ['invoiceDate', 'invoice_date'],
         ['dueDate', 'due_date'],
