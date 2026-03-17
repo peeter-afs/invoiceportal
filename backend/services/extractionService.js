@@ -47,6 +47,30 @@ function approxEqual(a, b) {
   return Math.abs(Number(a) - Number(b)) <= TOLERANCE;
 }
 
+/**
+ * Try to un-concatenate leading digits of unitPrice back onto qty.
+ * Common OCR error: qty "25" + price "8.47" → qty=2, price=58.47 (the "5" migrated).
+ * Returns array of candidate { qty, unitPrice } pairs.
+ */
+function tryUnconcatPrice(qty, unitPrice) {
+  const candidates = [];
+  const intPart = Math.floor(Math.abs(unitPrice));
+  const fracPart = Math.round((Math.abs(unitPrice) - intPart) * 10000) / 10000;
+  const intStr = String(intPart);
+
+  for (let d = 1; d <= Math.min(2, intStr.length - 1); d++) {
+    const movedDigits = intStr.substring(0, d);
+    const remainingInt = intStr.substring(d);
+    if (remainingInt === '') continue;
+    const newQty = Number(String(Math.round(qty)) + movedDigits);
+    const newUnitPrice = Math.round((Number(remainingInt) + fracPart) * 10000) / 10000;
+    if (newUnitPrice > 0) {
+      candidates.push({ qty: newQty, unitPrice: newUnitPrice });
+    }
+  }
+  return candidates;
+}
+
 function correctExtractedMath(extracted) {
   const corrections = [];
   const lines = extracted.lines || [];
@@ -60,28 +84,50 @@ function correctExtractedMath(extracted) {
     if (qty != null && unitPrice != null && net != null) {
       const expected = qty * unitPrice;
       if (!approxEqual(expected, net)) {
-        // Check if net is off by a factor of 10 or 100 (European decimal confusion)
-        for (const factor of [10, 100]) {
-          if (approxEqual(expected, net / factor)) {
-            corrections.push(`Line ${i + 1}: net ${net} → ${net / factor} (was ${factor}× too high, expected qty ${qty} × unitPrice ${unitPrice} = ${expected})`);
-            line.net = Number((net / factor).toFixed(2));
-            break;
-          }
-          if (approxEqual(expected * factor, net)) {
-            // unitPrice might be wrong
-            if (approxEqual(qty * (unitPrice / factor), net)) {
-              corrections.push(`Line ${i + 1}: unitPrice ${unitPrice} → ${unitPrice / factor} (was ${factor}× too high)`);
-              line.unitPrice = Number((unitPrice / factor).toFixed(2));
+        let fixed = false;
+
+        // 1) Try column un-concatenation: move digits from unitPrice back to qty
+        //    E.g. qty=2, unitPrice=58.47, net=211.75 → qty=25, unitPrice=8.47 (25×8.47=211.75)
+        if (qty > 0) {
+          const uncatCandidates = tryUnconcatPrice(qty, unitPrice);
+          for (const c of uncatCandidates) {
+            if (approxEqual(c.qty * c.unitPrice, net)) {
+              corrections.push(`Line ${i + 1}: column uncat fix: qty ${qty} → ${c.qty}, unitPrice ${unitPrice} → ${c.unitPrice} (${c.qty} × ${c.unitPrice} ≈ net ${net})`);
+              line.qty = c.qty;
+              line.unitPrice = c.unitPrice;
+              fixed = true;
               break;
             }
           }
         }
-        // If net still doesn't match and qty + unitPrice look reasonable, recalculate net
-        const recalcNet = qty * (line.unitPrice != null ? Number(line.unitPrice) : unitPrice);
-        if (!approxEqual(recalcNet, Number(line.net))) {
-          // Trust qty and unitPrice, fix net
-          corrections.push(`Line ${i + 1}: recalculated net from qty × unitPrice: ${Number(line.net)} → ${recalcNet.toFixed(2)}`);
-          line.net = Number(recalcNet.toFixed(2));
+
+        if (!fixed) {
+          // 2) Check if net is off by a factor of 10 or 100 (European decimal confusion)
+          for (const factor of [10, 100]) {
+            if (approxEqual(expected, net / factor)) {
+              corrections.push(`Line ${i + 1}: net ${net} → ${net / factor} (was ${factor}× too high, expected qty ${qty} × unitPrice ${unitPrice} = ${expected})`);
+              line.net = Number((net / factor).toFixed(2));
+              fixed = true;
+              break;
+            }
+            if (approxEqual(expected * factor, net)) {
+              if (approxEqual(qty * (unitPrice / factor), net)) {
+                corrections.push(`Line ${i + 1}: unitPrice ${unitPrice} → ${unitPrice / factor} (was ${factor}× too high)`);
+                line.unitPrice = Number((unitPrice / factor).toFixed(2));
+                fixed = true;
+                break;
+              }
+            }
+          }
+        }
+
+        if (!fixed) {
+          // 3) Last resort: recalculate net from qty × unitPrice
+          const recalcNet = qty * (line.unitPrice != null ? Number(line.unitPrice) : unitPrice);
+          if (!approxEqual(recalcNet, Number(line.net))) {
+            corrections.push(`Line ${i + 1}: recalculated net from qty × unitPrice: ${Number(line.net)} → ${recalcNet.toFixed(2)}`);
+            line.net = Number(recalcNet.toFixed(2));
+          }
         }
       }
     }
@@ -89,7 +135,6 @@ function correctExtractedMath(extracted) {
     // Calculate missing qty from net and unitPrice: qty = net / unitPrice
     if (line.qty == null && line.net != null && line.unitPrice != null && Number(line.unitPrice) !== 0) {
       const calcQty = Number(line.net) / Number(line.unitPrice);
-      // Only auto-fill if it's a clean number (integer or up to 3 decimals)
       const rounded = Math.round(calcQty * 1000) / 1000;
       if (approxEqual(rounded * Number(line.unitPrice), Number(line.net))) {
         line.qty = rounded;
@@ -111,63 +156,63 @@ function correctExtractedMath(extracted) {
     }
   }
 
-  // Cross-check: compare sum of line nets against invoice netTotal.
-  // Common OCR/extraction error: OpenAI concatenates adjacent columns.
-  // E.g. qty "1" + price first digit "3" → qty=13, then net=13×3.57=46.41
-  // but real values are qty=1, net=3.57. The invoice header total is the ground truth.
+  // Cross-check: compare sum of line nets against invoice netTotal (ground truth).
+  // Catches column-concat errors that are internally consistent (qty × unitPrice = net)
+  // but produce wrong totals. E.g. qty=2, price=58.47, net=116.94 but should be qty=25, price=8.47, net=211.75.
   if (lines.length > 0 && extracted.netTotal != null) {
     const linesSum = lines.reduce((s, l) => s + Number(l.net || 0), 0);
     const headerNet = Number(extracted.netTotal);
 
-    if (!approxEqual(linesSum, headerNet) && headerNet > 0 && linesSum > headerNet * 1.2) {
-      // Lines total is too high vs header — try fixing column-concatenation errors.
-      // For each line with qty>1 starting with "1", test if setting qty=1 and net=unitPrice
-      // brings the total closer to headerNet.
-      const candidateFixes = [];
-      let correctedSum = 0;
+    if (!approxEqual(linesSum, headerNet) && headerNet > 0) {
+      // Try fixing column-concatenation errors using un-concat approach.
+      // For each line, generate candidate fixes and find the combination closest to headerNet.
+      const lineFixes = []; // { idx, oldQty, oldPrice, oldNet, newQty, newPrice, newNet }
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         const qty = line.qty != null ? Number(line.qty) : null;
         const unitPrice = line.unitPrice != null ? Number(line.unitPrice) : null;
-        const net = line.net != null ? Number(line.net) : null;
 
-        if (qty != null && qty > 1 && unitPrice != null && net != null) {
-          // Detect concat pattern: qty starts with "1" and remaining digits match
-          // the first digits of the unit price.
-          // E.g. qty=13, unitPrice=3.57 → "13"[1:]="3", price starts with "3" → concat
-          // E.g. qty=15, unitPrice=5.23 → "15"[1:]="5", price starts with "5" → concat
-          const qtyStr = String(Math.round(qty));
-          const priceIntStr = String(unitPrice).replace('.', '').replace(/^0+/, '');
+        if (qty == null || unitPrice == null || qty <= 0) continue;
 
-          if (qtyStr.startsWith('1') && qtyStr.length > 1 &&
-              priceIntStr.startsWith(qtyStr.substring(1))) {
-            // Likely concat error — candidate for fix
-            candidateFixes.push(i);
-            correctedSum += unitPrice; // net would be unitPrice if qty=1
-          } else {
-            correctedSum += net;
+        const uncatCandidates = tryUnconcatPrice(qty, unitPrice);
+        for (const c of uncatCandidates) {
+          const newNet = Math.round(c.qty * c.unitPrice * 100) / 100;
+          const oldNet = Number(line.net || 0);
+          const delta = newNet - oldNet;
+          // Check if this fix brings total closer to headerNet
+          if (Math.abs(linesSum + delta - headerNet) < Math.abs(linesSum - headerNet)) {
+            lineFixes.push({ idx: i, oldQty: qty, oldPrice: unitPrice, oldNet, newQty: c.qty, newPrice: c.unitPrice, newNet, delta });
           }
-        } else {
-          correctedSum += net || 0;
         }
       }
 
-      // Apply fixes only if the corrected sum is much closer to headerNet
-      if (candidateFixes.length > 0 &&
-          Math.abs(correctedSum - headerNet) < Math.abs(linesSum - headerNet) * 0.5) {
-        for (const idx of candidateFixes) {
-          const line = lines[idx];
-          const oldQty = line.qty;
-          const oldNet = line.net;
-          line.qty = 1;
-          line.net = Number(Number(line.unitPrice).toFixed(2));
-          corrections.push(
-            `Line ${idx + 1}: qty ${oldQty} → 1, net ${oldNet} → ${line.net} (column concat fix; line total in PDF = unitPrice when qty=1)`
-          );
+      // Apply fixes greedily (each one that brings sum closer to headerNet)
+      if (lineFixes.length > 0) {
+        // Sort by how much each fix improves the total
+        lineFixes.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+        let currentSum = linesSum;
+        const applied = new Set();
+
+        for (const fix of lineFixes) {
+          if (applied.has(fix.idx)) continue;
+          const newSum = currentSum + fix.delta;
+          if (Math.abs(newSum - headerNet) < Math.abs(currentSum - headerNet)) {
+            const line = lines[fix.idx];
+            line.qty = fix.newQty;
+            line.unitPrice = fix.newPrice;
+            line.net = fix.newNet;
+            corrections.push(
+              `Line ${fix.idx + 1}: column uncat fix (total cross-check): qty ${fix.oldQty} → ${fix.newQty}, unitPrice ${fix.oldPrice} → ${fix.newPrice}, net ${fix.oldNet} → ${fix.newNet}`
+            );
+            currentSum = newSum;
+            applied.add(fix.idx);
+          }
         }
-        const fixedSum = lines.reduce((s, l) => s + Number(l.net || 0), 0);
-        corrections.push(`Line sum fixed: ${linesSum.toFixed(2)} → ${fixedSum.toFixed(2)} (header netTotal = ${headerNet})`);
+
+        if (applied.size > 0) {
+          corrections.push(`Line sum fixed: ${linesSum.toFixed(2)} → ${currentSum.toFixed(2)} (header netTotal = ${headerNet})`);
+        }
       }
     }
   }

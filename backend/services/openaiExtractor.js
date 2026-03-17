@@ -175,7 +175,10 @@ TABLE READING — CRITICAL:
 - Read each column value by its VISUAL POSITION under the column header. Do NOT merge adjacent values.
 - The LAST numeric column on each line (often "total", "kokku", "summa") is the line total → use it for "net".
 - "net" for a line = the line total column value. This is the MOST RELIABLE value.
-- For "qty", read ONLY the value directly under the quantity column. Quantities are typically small integers (1, 2, 3...).
+- For "qty", read ONLY the value directly under the quantity column. Quantities can be multi-digit (1, 2, 10, 25, 100, etc.).
+- COMMON ERROR: The last digit(s) of "qty" get merged with the first digit(s) of "unitPrice".
+  Example: qty=25, price=8,47 gets misread as qty=2, price=58,47. ALWAYS verify: qty × unitPrice ≈ net (line total).
+  If it doesn't match, re-read qty and unitPrice carefully from the PDF image.
 - For "unitPrice", read ONLY the value directly under the unit price column.
 - If the invoice has a "pos." or position number column, those are supplier internal numbers, NOT row counts.
 - Multi-order invoices may have "order no." separator rows — these are NOT product lines, skip them.
