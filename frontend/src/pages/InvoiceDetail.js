@@ -278,6 +278,32 @@ function InvoiceDetail() {
     }
   };
 
+  // Compute row sums and per-line errors (works for both view and edit mode)
+  const viewLines = editing ? editLines : (invoice?.lines || []);
+  const TOLERANCE = 0.02;
+  const lineErrors = viewLines.map((line) => {
+    const q = parseFloat(line.qty);
+    const p = parseFloat(line.unitPrice);
+    const n = parseFloat(line.net);
+    const errors = [];
+    if (!isNaN(q) && !isNaN(p) && !isNaN(n)) {
+      const expected = Math.round(q * p * 100) / 100;
+      if (Math.abs(expected - n) > TOLERANCE) {
+        errors.push(`qty × unitPrice = ${expected.toFixed(2)}, but net = ${n.toFixed(2)}`);
+      }
+    }
+    return errors;
+  });
+
+  const rowNetSum = viewLines.reduce((s, l) => s + (parseFloat(l.net) || 0), 0);
+  const rowGrossSum = viewLines.reduce((s, l) => s + (parseFloat(l.gross) || 0), 0);
+
+  const invNetTotal = editing ? parseFloat(editData.netTotal) : invoice?.netTotal;
+  const invGrossTotal = editing ? parseFloat(editData.grossTotal) : invoice?.grossTotal;
+
+  const netMatches = !isNaN(invNetTotal) && Math.abs(rowNetSum - invNetTotal) <= TOLERANCE;
+  const grossMatches = !isNaN(invGrossTotal) && Math.abs(rowGrossSum - invGrossTotal) <= TOLERANCE;
+
   if (loading) return <div className="container"><p>Loading...</p></div>;
   if (error && !invoice) return <div className="container"><div className="error">{error}</div></div>;
   if (!invoice) return null;
@@ -649,17 +675,33 @@ function InvoiceDetail() {
                   </div>
                 ) : (
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
-                    <div>
+                    <div
+                      title={invoice.netTotal != null ? `Row sum: ${rowNetSum.toFixed(2)}${netMatches ? ' (matches)' : ` (diff: ${(rowNetSum - invoice.netTotal).toFixed(2)})`}` : ''}
+                      style={{ color: invoice.netTotal != null && viewLines.length > 0 ? (netMatches ? '#27ae60' : '#e74c3c') : undefined, fontWeight: invoice.netTotal != null && viewLines.length > 0 && !netMatches ? 'bold' : undefined }}
+                    >
                       <strong>Net Total:</strong><br />
                       {invoice.netTotal != null ? `${invoice.netTotal.toFixed(2)} ${invoice.currency || ''}` : '-'}
+                      {invoice.netTotal != null && viewLines.length > 0 && !netMatches && (
+                        <span style={{ fontSize: '0.8em', display: 'block', marginTop: '0.2rem' }}>
+                          rows: {rowNetSum.toFixed(2)}
+                        </span>
+                      )}
                     </div>
                     <div>
                       <strong>VAT Total:</strong><br />
                       {invoice.vatTotal != null ? `${invoice.vatTotal.toFixed(2)} ${invoice.currency || ''}` : '-'}
                     </div>
-                    <div>
+                    <div
+                      title={invoice.grossTotal != null ? `Row sum: ${rowGrossSum.toFixed(2)}${grossMatches ? ' (matches)' : ` (diff: ${(rowGrossSum - invoice.grossTotal).toFixed(2)})`}` : ''}
+                      style={{ color: invoice.grossTotal != null && viewLines.length > 0 ? (grossMatches ? '#27ae60' : '#e74c3c') : undefined, fontWeight: invoice.grossTotal != null && viewLines.length > 0 && !grossMatches ? 'bold' : undefined }}
+                    >
                       <strong>Gross Total:</strong><br />
                       {invoice.grossTotal != null ? `${invoice.grossTotal.toFixed(2)} ${invoice.currency || ''}` : '-'}
+                      {invoice.grossTotal != null && viewLines.length > 0 && !grossMatches && (
+                        <span style={{ fontSize: '0.8em', display: 'block', marginTop: '0.2rem' }}>
+                          rows: {rowGrossSum.toFixed(2)}
+                        </span>
+                      )}
                     </div>
                   </div>
                 )}
@@ -703,29 +745,41 @@ function InvoiceDetail() {
                         </tr>
                       </thead>
                       <tbody>
-                        {editLines.map((line, idx) => (
-                          <tr key={idx}>
-                            <td>{idx + 1}</td>
-                            <td><input style={smallInputStyle} value={line.productCode} onChange={(e) => updateLine(idx, 'productCode', e.target.value)} /></td>
-                            <td><input style={{ ...smallInputStyle, minWidth: '150px' }} value={line.description} onChange={(e) => updateLine(idx, 'description', e.target.value)} /></td>
-                            <td><input type="number" step="any" style={{ ...smallInputStyle, width: '70px' }} value={line.qty} onChange={(e) => updateLine(idx, 'qty', e.target.value)} /></td>
-                            <td><input style={{ ...smallInputStyle, width: '50px' }} value={line.unit} onChange={(e) => updateLine(idx, 'unit', e.target.value)} /></td>
-                            <td><input type="number" step="any" style={{ ...smallInputStyle, width: '90px' }} value={line.unitPrice} onChange={(e) => updateLine(idx, 'unitPrice', e.target.value)} /></td>
-                            <td><input type="number" step="any" style={{ ...smallInputStyle, width: '60px' }} value={line.vatRate} onChange={(e) => updateLine(idx, 'vatRate', e.target.value)} /></td>
-                            <td><input type="number" step="0.01" style={{ ...smallInputStyle, width: '80px' }} value={line.net} onChange={(e) => updateLine(idx, 'net', e.target.value)} /></td>
-                            <td><input type="number" step="0.01" style={{ ...smallInputStyle, width: '80px' }} value={line.gross} onChange={(e) => updateLine(idx, 'gross', e.target.value)} /></td>
-                            <td>
-                              <button
-                                onClick={() => removeLine(idx)}
-                                style={{ background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontSize: '1.1rem', padding: '0.2rem' }}
-                                title="Remove line"
-                              >
-                                &times;
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
+                        {editLines.map((line, idx) => {
+                          const hasError = lineErrors[idx] && lineErrors[idx].length > 0;
+                          const errBorder = hasError ? { border: '1px solid #e74c3c', backgroundColor: '#fff8f8' } : {};
+                          return (
+                            <tr key={idx} style={hasError ? { backgroundColor: '#fff3f3' } : undefined} title={hasError ? lineErrors[idx].join('; ') : undefined}>
+                              <td>{idx + 1}</td>
+                              <td><input style={smallInputStyle} value={line.productCode} onChange={(e) => updateLine(idx, 'productCode', e.target.value)} /></td>
+                              <td><input style={{ ...smallInputStyle, minWidth: '150px' }} value={line.description} onChange={(e) => updateLine(idx, 'description', e.target.value)} /></td>
+                              <td><input type="number" step="any" style={{ ...smallInputStyle, width: '70px', ...errBorder }} value={line.qty} onChange={(e) => updateLine(idx, 'qty', e.target.value)} /></td>
+                              <td><input style={{ ...smallInputStyle, width: '50px' }} value={line.unit} onChange={(e) => updateLine(idx, 'unit', e.target.value)} /></td>
+                              <td><input type="number" step="any" style={{ ...smallInputStyle, width: '90px', ...errBorder }} value={line.unitPrice} onChange={(e) => updateLine(idx, 'unitPrice', e.target.value)} /></td>
+                              <td><input type="number" step="any" style={{ ...smallInputStyle, width: '60px' }} value={line.vatRate} onChange={(e) => updateLine(idx, 'vatRate', e.target.value)} /></td>
+                              <td><input type="number" step="0.01" style={{ ...smallInputStyle, width: '80px' }} value={line.net} onChange={(e) => updateLine(idx, 'net', e.target.value)} /></td>
+                              <td><input type="number" step="0.01" style={{ ...smallInputStyle, width: '80px' }} value={line.gross} onChange={(e) => updateLine(idx, 'gross', e.target.value)} /></td>
+                              <td>
+                                <button
+                                  onClick={() => removeLine(idx)}
+                                  style={{ background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontSize: '1.1rem', padding: '0.2rem' }}
+                                  title="Remove line"
+                                >
+                                  &times;
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
+                      <tfoot>
+                        <tr style={{ fontWeight: 'bold', borderTop: '2px solid #ccc' }}>
+                          <td colSpan={7} style={{ textAlign: 'right' }}>Row sums:</td>
+                          <td style={{ color: netMatches ? '#27ae60' : '#e74c3c' }}>{rowNetSum.toFixed(2)}</td>
+                          <td style={{ color: grossMatches ? '#27ae60' : '#e74c3c' }}>{rowGrossSum.toFixed(2)}</td>
+                          <td></td>
+                        </tr>
+                      </tfoot>
                     </table>
                     <button
                       className="btn"
@@ -753,33 +807,46 @@ function InvoiceDetail() {
                         </tr>
                       </thead>
                       <tbody>
-                        {invoice.lines.map((line) => (
-                          <tr key={line.id}>
-                            <td>{line.rowNo}</td>
-                            <td>{line.productCode || '-'}</td>
-                            <td>{line.description || '-'}</td>
-                            <td>{line.qty != null ? line.qty : '-'}</td>
-                            <td>{line.unit || '-'}</td>
-                            <td>{line.unitPrice != null ? line.unitPrice.toFixed(4) : '-'}</td>
-                            <td>{line.vatRate != null ? `${line.vatRate}%` : '-'}</td>
-                            <td>{line.net != null ? line.net.toFixed(2) : '-'}</td>
-                            <td>{line.gross != null ? line.gross.toFixed(2) : '-'}</td>
-                            <td>
-                              {line.matchData ? (
-                                <span className={`status-badge ${
-                                  line.matchData.confidence >= 0.95 ? 'status-approved' :
-                                  line.matchData.confidence >= 0.75 ? 'status-needs_review' :
-                                  'status-rejected'
-                                }`}>
-                                  {Math.round((line.matchData.confidence || 0) * 100)}%
-                                </span>
-                              ) : (
-                                <span style={{ color: '#999' }}>—</span>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
+                        {invoice.lines.map((line, idx) => {
+                          const hasError = lineErrors[idx] && lineErrors[idx].length > 0;
+                          return (
+                            <tr key={line.id} style={hasError ? { backgroundColor: '#fff3f3' } : undefined} title={hasError ? lineErrors[idx].join('; ') : undefined}>
+                              <td>{line.rowNo}</td>
+                              <td>{line.productCode || '-'}</td>
+                              <td>{line.description || '-'}</td>
+                              <td style={hasError ? { color: '#e74c3c', fontWeight: 'bold' } : undefined}>{line.qty != null ? line.qty : '-'}</td>
+                              <td>{line.unit || '-'}</td>
+                              <td style={hasError ? { color: '#e74c3c', fontWeight: 'bold' } : undefined}>{line.unitPrice != null ? line.unitPrice.toFixed(4) : '-'}</td>
+                              <td>{line.vatRate != null ? `${line.vatRate}%` : '-'}</td>
+                              <td>{line.net != null ? line.net.toFixed(2) : '-'}</td>
+                              <td>{line.gross != null ? line.gross.toFixed(2) : '-'}</td>
+                              <td>
+                                {line.matchData ? (
+                                  <span className={`status-badge ${
+                                    line.matchData.confidence >= 0.95 ? 'status-approved' :
+                                    line.matchData.confidence >= 0.75 ? 'status-needs_review' :
+                                    'status-rejected'
+                                  }`}>
+                                    {Math.round((line.matchData.confidence || 0) * 100)}%
+                                  </span>
+                                ) : (
+                                  <span style={{ color: '#999' }}>—</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
+                      {invoice.lines.length > 0 && (!netMatches || !grossMatches) && (
+                        <tfoot>
+                          <tr style={{ fontWeight: 'bold', fontSize: '0.9em', borderTop: '2px solid #ccc' }}>
+                            <td colSpan={7} style={{ textAlign: 'right' }}>Row sums:</td>
+                            <td style={{ color: netMatches ? '#27ae60' : '#e74c3c' }}>{rowNetSum.toFixed(2)}</td>
+                            <td style={{ color: grossMatches ? '#27ae60' : '#e74c3c' }}>{rowGrossSum.toFixed(2)}</td>
+                            <td></td>
+                          </tr>
+                        </tfoot>
+                      )}
                     </table>
                   ) : (
                     <p style={{ color: '#999' }}>No invoice lines.</p>
