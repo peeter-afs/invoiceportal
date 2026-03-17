@@ -102,6 +102,9 @@ export const supplierAPI = {
   delete: (id) => api.delete(`/suppliers/${id}`),
   addAlias: (id, alias) => api.post(`/suppliers/${id}/aliases`, { alias }),
   removeAlias: (id, aliasId) => api.delete(`/suppliers/${id}/aliases/${aliasId}`),
+  getSamples: (id) => api.get(`/suppliers/${id}/samples`),
+  addSample: (id, invoiceId, notes) => api.post(`/suppliers/${id}/samples`, { invoiceId, notes: notes || undefined }),
+  removeSample: (id, sampleId) => api.delete(`/suppliers/${id}/samples/${sampleId}`),
 };
 
 // Email Inbox API (admin only)

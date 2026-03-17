@@ -141,6 +141,7 @@ async function updateSupplier(tenantId, supplierId, data) {
     ['address', 'address'],
     ['bankAccount', 'bank_account'],
     ['futursoftSupplierNr', 'futursoft_supplier_nr'],
+    ['extractionInstructions', 'extraction_instructions'],
   ];
 
   for (const [bodyKey, col] of updatable) {
@@ -275,6 +276,70 @@ async function lookupFutursoftSupplierNr(invoiceId, session) {
   console.log(`[supplier] No FS supplier nr found for "${supplier.name}" after ${candidates.length} searches`);
 }
 
+/**
+ * Quick supplier match from raw PDF text — scan for known supplier names/aliases.
+ * Used BEFORE calling OpenAI to inject supplier-specific context into the prompt.
+ * Returns { id, name, futursoft_supplier_nr } or null.
+ */
+async function quickMatchSupplierFromText(tenantId, pdfText) {
+  if (!pdfText || pdfText.length < 10) return null;
+  const textLower = pdfText.toLowerCase();
+
+  // Get all supplier names and aliases for this tenant
+  const suppliers = await query(
+    `SELECT s.id, s.name, s.futursoft_supplier_nr
+     FROM suppliers s WHERE s.tenant_id = ?`,
+    [tenantId]
+  );
+  const aliases = await query(
+    `SELECT sa.alias, s.id, s.name, s.futursoft_supplier_nr
+     FROM supplier_aliases sa
+     JOIN suppliers s ON s.id = sa.supplier_id
+     WHERE s.tenant_id = ?`,
+    [tenantId]
+  );
+
+  // Check supplier names (longest first to avoid partial matches)
+  const allNames = [
+    ...suppliers.map((s) => ({ name: s.name, id: s.id, futursoft_supplier_nr: s.futursoft_supplier_nr })),
+    ...aliases.map((a) => ({ name: a.alias, id: a.id, futursoft_supplier_nr: a.futursoft_supplier_nr })),
+  ].sort((a, b) => b.name.length - a.name.length);
+
+  for (const entry of allNames) {
+    if (entry.name && entry.name.length >= 3 && textLower.includes(entry.name.toLowerCase())) {
+      return { id: entry.id, name: entry.name, futursoft_supplier_nr: entry.futursoft_supplier_nr };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Get extraction context for a supplier — instructions + sample JSONs.
+ * Used to inject supplier-specific context into the OpenAI extraction prompt.
+ */
+async function getExtractionContext(supplierId) {
+  const suppliers = await query(
+    'SELECT extraction_instructions FROM suppliers WHERE id = ? LIMIT 1',
+    [supplierId]
+  );
+  const instructions = suppliers[0]?.extraction_instructions || null;
+
+  const samples = await query(
+    'SELECT extracted_json FROM extraction_samples WHERE supplier_id = ? ORDER BY created_at DESC LIMIT 2',
+    [supplierId]
+  );
+
+  if (!instructions && samples.length === 0) return null;
+
+  return {
+    instructions,
+    samples: samples.map((s) => {
+      try { return JSON.parse(s.extracted_json); } catch { return null; }
+    }).filter(Boolean),
+  };
+}
+
 module.exports = {
   findSupplier,
   resolveSupplier,
@@ -286,4 +351,6 @@ module.exports = {
   addAlias,
   removeAlias,
   lookupFutursoftSupplierNr,
+  quickMatchSupplierFromText,
+  getExtractionContext,
 };

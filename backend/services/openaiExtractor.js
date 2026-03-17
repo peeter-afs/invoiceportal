@@ -245,6 +245,32 @@ async function extract(invoiceText, filename, options = {}) {
     text: `Invoice filename: ${filename}\n\n--- FULL EXTRACTED TEXT (all pages) ---\n${invoiceText}`,
   });
 
+  // Inject supplier-specific extraction context (instructions + sample results)
+  if (options.supplierContext) {
+    const ctx = options.supplierContext;
+    let contextText = '';
+    if (ctx.instructions) {
+      contextText += `\n\n--- SUPPLIER-SPECIFIC INSTRUCTIONS ---\nThe following are custom instructions for this supplier's invoices. Follow them carefully:\n${ctx.instructions}`;
+    }
+    if (ctx.samples && ctx.samples.length > 0) {
+      contextText += '\n\n--- REFERENCE EXTRACTION (correct example from previous invoice by this supplier) ---\n';
+      contextText += 'Use this as a guide for the expected output format, field values, and line structure:\n';
+      // Include up to 2 samples, but trim lines to keep token usage reasonable
+      for (let si = 0; si < Math.min(ctx.samples.length, 2); si++) {
+        const sample = { ...ctx.samples[si] };
+        // Keep only first 5 lines as reference to save tokens
+        if (sample.lines && sample.lines.length > 5) {
+          sample.lines = sample.lines.slice(0, 5);
+          sample._note = `Showing first 5 of ${ctx.samples[si].lines.length} lines`;
+        }
+        contextText += `\nExample ${si + 1}:\n${JSON.stringify(sample, null, 2)}`;
+      }
+    }
+    if (contextText) {
+      userContentParts.push({ type: 'text', text: contextText });
+    }
+  }
+
   // On retry, include the previous errors so the model can self-correct
   if (options.previousErrors && options.previousErrors.length > 0) {
     messages.push({ role: 'user', content: userContentParts });

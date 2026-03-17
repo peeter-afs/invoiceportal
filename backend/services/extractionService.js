@@ -4,7 +4,7 @@ const { query } = require('../db');
 const openaiExtractor = require('./openaiExtractor');
 const costpocketExtractor = require('./costpocketExtractor');
 const { validate, verifyTotalAgainstPdfText } = require('./validationService');
-const { findSupplier, lookupFutursoftSupplierNr } = require('./supplierService');
+const { findSupplier, lookupFutursoftSupplierNr, quickMatchSupplierFromText, getExtractionContext } = require('./supplierService');
 
 const MIN_CONFIDENCE = 0.6; // below this, try CostPocket fallback
 const TOLERANCE = 0.02; // 2 cent tolerance for rounding
@@ -352,6 +352,7 @@ async function saveExtractedData(invoiceId, extracted) {
  * Runs asynchronously — does not block the HTTP response.
  */
 async function processInvoice(invoiceId, pdfBuffer, filename, session) {
+  const extractionStart = Date.now();
   try {
     await updateInvoiceStatus(invoiceId, 'processing');
     await addLog(invoiceId, 'processing_start', 'info', 'Started processing', { filename });
@@ -375,6 +376,31 @@ async function processInvoice(invoiceId, pdfBuffer, filename, session) {
       ? pdfText
       : `[This invoice is a scanned image. Filename: ${filename}]`;
 
+    // Step 1b: Early supplier matching from PDF text — for supplier-specific extraction context
+    let supplierContext = null;
+    let earlyMatchedSupplier = null;
+    try {
+      const invoiceRow = await query('SELECT tenant_id FROM invoices WHERE id = ? LIMIT 1', [invoiceId]);
+      if (invoiceRow[0] && pdfText) {
+        earlyMatchedSupplier = await quickMatchSupplierFromText(invoiceRow[0].tenant_id, pdfText);
+        if (earlyMatchedSupplier) {
+          supplierContext = await getExtractionContext(earlyMatchedSupplier.id);
+          if (supplierContext) {
+            await addLog(invoiceId, 'supplier_context', 'info',
+              `Matched supplier "${earlyMatchedSupplier.name}" from PDF text — injecting extraction context (instructions: ${supplierContext.instructions ? 'yes' : 'no'}, samples: ${supplierContext.samples.length})`,
+              { supplierId: earlyMatchedSupplier.id }
+            );
+          } else {
+            await addLog(invoiceId, 'supplier_context', 'info',
+              `Matched supplier "${earlyMatchedSupplier.name}" from PDF text — no extraction context configured`, null
+            );
+          }
+        }
+      }
+    } catch (ctxErr) {
+      await addLog(invoiceId, 'supplier_context', 'warn', `Early supplier match failed: ${ctxErr.message}`, null);
+    }
+
     // Step 2: Primary extraction with OpenAI
     // First try uses OPENAI_MODEL (default: gpt-4o-mini, cheaper/faster).
     // Retry on math errors uses OPENAI_RETRY_MODEL (default: gpt-4o, more capable).
@@ -389,7 +415,7 @@ async function processInvoice(invoiceId, pdfBuffer, filename, session) {
     if (process.env.OPENAI_API_KEY) {
       try {
         await addLog(invoiceId, 'extraction_openai', 'info', `Starting OpenAI extraction with ${primaryModel} (vision + structured output)`, null);
-        extracted = await openaiExtractor.extract(textForOpenAI, filename, { pdfBuffer, model: primaryModel });
+        extracted = await openaiExtractor.extract(textForOpenAI, filename, { pdfBuffer, model: primaryModel, supplierContext });
         await addLog(invoiceId, 'extraction_openai', 'info', `OpenAI extraction complete (${extracted.model}), confidence: ${extracted.confidence}`, {
           confidence: extracted.confidence,
           model: extracted.model,
@@ -427,6 +453,7 @@ async function processInvoice(invoiceId, pdfBuffer, filename, session) {
               model: retryModel,
               previousErrors: mathErrors.map(e => e.message),
               previousResponse: extracted.rawResponse,
+              supplierContext,
             });
 
             // Apply math correction to retry result too
@@ -522,8 +549,8 @@ async function processInvoice(invoiceId, pdfBuffer, filename, session) {
     // Save extraction statistics
     const modelUsed = finalModel || extracted.model || (usedFallback ? 'costpocket' : null);
     await query(
-      'UPDATE invoices SET extraction_model = ?, extraction_retried = ?, math_corrections = ? WHERE id = ?',
-      [modelUsed, usedRetry ? 1 : 0, totalMathCorrections, invoiceId]
+      'UPDATE invoices SET extraction_model = ?, extraction_retried = ?, math_corrections = ?, extraction_duration_ms = ? WHERE id = ?',
+      [modelUsed, usedRetry ? 1 : 0, totalMathCorrections, Date.now() - extractionStart, invoiceId]
     );
 
     // Step 5b: Link to existing supplier if found (no auto-create during extraction)

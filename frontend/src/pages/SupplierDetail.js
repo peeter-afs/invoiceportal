@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
-import { supplierAPI } from '../services/api';
+import { supplierAPI, invoiceAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import './Dashboard.css';
 
@@ -13,7 +13,7 @@ function SupplierDetail() {
 
   const [supplier, setSupplier] = useState({
     name: '', vatNumber: '', regNumber: '', address: '',
-    bankAccount: '', futursoftSupplierNr: '',
+    bankAccount: '', futursoftSupplierNr: '', extractionInstructions: '',
   });
   const [aliases, setAliases] = useState([]);
   const [newAlias, setNewAlias] = useState('');
@@ -21,6 +21,13 @@ function SupplierDetail() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+
+  // Extraction samples state
+  const [samples, setSamples] = useState([]);
+  const [linkedInvoices, setLinkedInvoices] = useState([]);
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState('');
+  const [sampleNotes, setSampleNotes] = useState('');
+  const [addingSample, setAddingSample] = useState(false);
 
   const fetchSupplier = useCallback(async () => {
     try {
@@ -33,6 +40,7 @@ function SupplierDetail() {
         address: data.address || '',
         bankAccount: data.bankAccount || '',
         futursoftSupplierNr: data.futursoftSupplierNr || '',
+        extractionInstructions: data.extractionInstructions || '',
       });
       setAliases(data.aliases || []);
     } catch (err) {
@@ -42,9 +50,29 @@ function SupplierDetail() {
     }
   }, [id]);
 
+  const fetchSamples = useCallback(async () => {
+    try {
+      const res = await supplierAPI.getSamples(id);
+      setSamples(res.data);
+    } catch { /* ignore */ }
+  }, [id]);
+
+  const fetchLinkedInvoices = useCallback(async () => {
+    try {
+      const res = await invoiceAPI.getAll();
+      // Filter invoices linked to this supplier
+      const linked = res.data.filter((inv) => inv.supplierId === id);
+      setLinkedInvoices(linked);
+    } catch { /* ignore */ }
+  }, [id]);
+
   useEffect(() => {
-    if (!isNew) fetchSupplier();
-  }, [isNew, fetchSupplier]);
+    if (!isNew) {
+      fetchSupplier();
+      fetchSamples();
+      fetchLinkedInvoices();
+    }
+  }, [isNew, fetchSupplier, fetchSamples, fetchLinkedInvoices]);
 
   const handleSave = async (e) => {
     e.preventDefault();
@@ -94,6 +122,30 @@ function SupplierDetail() {
       fetchSupplier();
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to remove alias');
+    }
+  };
+
+  const handleAddSample = async () => {
+    if (!selectedInvoiceId) return;
+    setAddingSample(true);
+    try {
+      await supplierAPI.addSample(id, selectedInvoiceId, sampleNotes);
+      setSelectedInvoiceId('');
+      setSampleNotes('');
+      fetchSamples();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to add sample');
+    } finally {
+      setAddingSample(false);
+    }
+  };
+
+  const handleRemoveSample = async (sampleId) => {
+    try {
+      await supplierAPI.removeSample(id, sampleId);
+      fetchSamples();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to remove sample');
     }
   };
 
@@ -243,6 +295,125 @@ function SupplierDetail() {
                 </button>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Extraction Instructions — only for existing suppliers */}
+        {!isNew && (
+          <div className="card" style={{ marginTop: '1rem' }}>
+            <h3>Extraction Instructions</h3>
+            <p style={{ color: '#666', fontSize: '0.9em', marginBottom: '0.75rem' }}>
+              Custom instructions for extracting invoices from this supplier. These are injected into the AI prompt.
+            </p>
+            <textarea
+              value={supplier.extractionInstructions}
+              onChange={(e) => setSupplier({ ...supplier, extractionInstructions: e.target.value })}
+              placeholder="e.g., Qty column is labeled 'Kgk'. Position numbers in first column are NOT row numbers. Unit prices include VAT..."
+              rows={4}
+              style={{ width: '100%', padding: '0.5rem', fontFamily: 'inherit' }}
+            />
+            {isAdmin && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ marginTop: '0.5rem' }}
+                disabled={saving}
+                onClick={async () => {
+                  setSaving(true);
+                  setError('');
+                  try {
+                    await supplierAPI.update(id, { extractionInstructions: supplier.extractionInstructions });
+                    setSuccess('Extraction instructions saved');
+                  } catch (err) {
+                    setError(err.response?.data?.error || 'Failed to save');
+                  } finally {
+                    setSaving(false);
+                  }
+                }}
+              >
+                Save Instructions
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Extraction Samples — only for existing suppliers */}
+        {!isNew && (
+          <div className="card" style={{ marginTop: '1rem' }}>
+            <h3>Extraction Samples ({samples.length})</h3>
+            <p style={{ color: '#666', fontSize: '0.9em', marginBottom: '0.75rem' }}>
+              Reference invoices with correct extraction results. Used as few-shot examples for the AI.
+            </p>
+
+            {samples.length > 0 ? (
+              <ul style={{ listStyle: 'none', padding: 0 }}>
+                {samples.map((s) => (
+                  <li key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', padding: '0.5rem', backgroundColor: '#f8f9fa', borderRadius: '4px' }}>
+                    <span style={{ flex: 1 }}>
+                      {s.invoiceId ? (
+                        <Link to={`/invoices/${s.invoiceId}`}>
+                          {s.invoiceNumber || 'Invoice'}
+                        </Link>
+                      ) : (
+                        <span style={{ color: '#999' }}>Source invoice deleted</span>
+                      )}
+                      {s.notes && <span style={{ color: '#666', marginLeft: '0.5rem' }}>— {s.notes}</span>}
+                      <span style={{ color: '#999', fontSize: '0.8em', marginLeft: '0.5rem' }}>
+                        {new Date(s.createdAt).toLocaleDateString()}
+                      </span>
+                    </span>
+                    <button
+                      className="btn"
+                      style={{ fontSize: '0.8rem', padding: '0.25rem 0.5rem', backgroundColor: '#e74c3c', color: 'white' }}
+                      onClick={() => handleRemoveSample(s.id)}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p style={{ color: '#999' }}>No extraction samples configured.</p>
+            )}
+
+            <div style={{ marginTop: '0.75rem', padding: '0.75rem', backgroundColor: '#f8f9fa', borderRadius: '4px' }}>
+              <strong style={{ fontSize: '0.9em' }}>Add sample from invoice:</strong>
+              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <select
+                  value={selectedInvoiceId}
+                  onChange={(e) => setSelectedInvoiceId(e.target.value)}
+                  style={{ flex: 1, minWidth: '200px', padding: '0.4rem' }}
+                >
+                  <option value="">— Select invoice —</option>
+                  {linkedInvoices.map((inv) => (
+                    <option key={inv._id} value={inv._id}>
+                      {inv.invoiceNumber || 'No number'} — {inv.grossTotal != null ? `${inv.grossTotal.toFixed(2)}` : '?'} ({inv.status})
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  value={sampleNotes}
+                  onChange={(e) => setSampleNotes(e.target.value)}
+                  placeholder="Notes (optional)"
+                  style={{ width: '200px', padding: '0.4rem' }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleAddSample}
+                  disabled={!selectedInvoiceId || addingSample}
+                  style={{ fontSize: '0.85rem' }}
+                >
+                  {addingSample ? 'Adding...' : 'Add Sample'}
+                </button>
+              </div>
+              {linkedInvoices.length === 0 && (
+                <p style={{ color: '#999', fontSize: '0.85em', marginTop: '0.5rem' }}>
+                  No invoices linked to this supplier. Link invoices first from the Invoice Detail page.
+                </p>
+              )}
+            </div>
           </div>
         )}
       </div>

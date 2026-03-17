@@ -674,6 +674,9 @@ function InvoiceDetail() {
                       {invoice.mathCorrections > 0 && (
                         <span style={{ color: '#e67e22', marginLeft: '0.5rem' }}>{invoice.mathCorrections} math fix{invoice.mathCorrections > 1 ? 'es' : ''}</span>
                       )}
+                      {invoice.extractionDurationMs != null && (
+                        <span style={{ marginLeft: '0.5rem' }}>{(invoice.extractionDurationMs / 1000).toFixed(1)}s</span>
+                      )}
                     </span>
                   )}
                 </div>

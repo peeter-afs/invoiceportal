@@ -159,6 +159,7 @@ CREATE TABLE suppliers (
   address TEXT NULL,
   bank_account VARCHAR(64) NULL,
   futursoft_supplier_nr VARCHAR(64) NULL,
+  extraction_instructions TEXT NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
@@ -181,6 +182,23 @@ CREATE TABLE supplier_aliases (
   UNIQUE KEY ux_supplier_aliases_alias (supplier_id, alias),
   KEY idx_supplier_aliases_supplier (supplier_id),
   CONSTRAINT fk_supplier_aliases_supplier
+    FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- ============================================================
+-- 7c. Extraction Samples
+-- ============================================================
+CREATE TABLE extraction_samples (
+  id CHAR(36) NOT NULL DEFAULT (UUID()),
+  supplier_id CHAR(36) NOT NULL,
+  invoice_id CHAR(36) NULL,
+  storage_key VARCHAR(1024) NOT NULL,
+  extracted_json LONGTEXT NOT NULL,
+  notes VARCHAR(512) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_extraction_samples_supplier (supplier_id),
+  CONSTRAINT fk_extraction_samples_supplier
     FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
@@ -236,6 +254,7 @@ CREATE TABLE invoices (
   extraction_model VARCHAR(64) NULL,
   extraction_retried TINYINT(1) NOT NULL DEFAULT 0,
   math_corrections INT NOT NULL DEFAULT 0,
+  extraction_duration_ms INT NULL,
   created_by CHAR(36) NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
@@ -275,6 +294,11 @@ CREATE TABLE invoice_files (
     FOREIGN KEY (invoice_id) REFERENCES invoices(id)
     ON DELETE CASCADE
 ) ENGINE=InnoDB;
+
+-- Add invoice FK to extraction_samples (invoices table now exists)
+ALTER TABLE extraction_samples
+  ADD CONSTRAINT fk_extraction_samples_invoice
+    FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE SET NULL;
 
 -- ============================================================
 -- 9. Invoice Lines (extracted rows from PDF)
