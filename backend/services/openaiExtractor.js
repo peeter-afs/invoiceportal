@@ -179,7 +179,8 @@ TABLE READING — CRITICAL:
 - COMMON ERROR: The last digit(s) of "qty" get merged with the first digit(s) of "unitPrice".
   Example: qty=25, price=8,47 gets misread as qty=2, price=58,47. ALWAYS verify: qty × unitPrice ≈ net (line total).
   If it doesn't match, re-read qty and unitPrice carefully from the PDF image.
-- For "unitPrice", read ONLY the value directly under the unit price column.
+- For "unitPrice", read ONLY the value directly under the unit price column. unitPrice is the price PER SINGLE UNIT, NOT the line total.
+  COMMON ERROR: Reading the line total (net) into the unitPrice field. unitPrice should NEVER equal net unless qty=1. If unitPrice = net and qty > 1, you read the wrong column.
 - If the invoice has a "pos." or position number column, those are supplier internal numbers, NOT row counts.
 - Multi-order invoices may have "order no." separator rows — these are NOT product lines, skip them.
 
@@ -307,4 +308,73 @@ async function extract(invoiceText, filename, options = {}) {
   };
 }
 
-module.exports = { extract };
+/**
+ * Analyze a successfully-extracted invoice PDF and generate extraction instructions
+ * for future invoices from the same supplier. Called when a supplier has no instructions yet.
+ *
+ * @param {Buffer} pdfBuffer - the invoice PDF
+ * @param {string} filename - original filename
+ * @param {object} extractedData - the successfully extracted invoice data (used as reference)
+ * @returns {string} generated extraction instructions text
+ */
+async function generateExtractionInstructions(pdfBuffer, filename, extractedData) {
+  const openai = getClient();
+  const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+
+  const userContentParts = [];
+
+  // Send page 1 as visual input (layout reference)
+  if (pdfBuffer) {
+    const { buffer: visualPdf } = await extractKeyPages(pdfBuffer);
+    const base64Pdf = visualPdf.toString('base64');
+    userContentParts.push({
+      type: 'file',
+      file: {
+        filename: filename || 'invoice.pdf',
+        file_data: `data:application/pdf;base64,${base64Pdf}`,
+      },
+    });
+  }
+
+  // Include the successful extraction result as reference
+  const trimmedData = { ...extractedData };
+  delete trimmedData.rawResponse;
+  delete trimmedData.extractedBy;
+  delete trimmedData.model;
+  if (trimmedData.lines && trimmedData.lines.length > 3) {
+    trimmedData.lines = trimmedData.lines.slice(0, 3);
+    trimmedData._note = 'Showing first 3 lines only';
+  }
+
+  userContentParts.push({
+    type: 'text',
+    text: `Analyze this invoice PDF layout and generate extraction instructions for future invoices from the same supplier.
+
+Here is the correct extraction result for this invoice (reference):
+${JSON.stringify(trimmedData, null, 2)}
+
+Based on the PDF visual layout, describe:
+1. The table column layout — list each column header (in the original language) and what field it maps to (e.g., "Kgk" → qty, "Hind km-ta" → unitPrice)
+2. The column order from left to right
+3. Any quirks or special formatting (e.g., position numbers in first column that are NOT row counts, order separator rows, merged cells)
+4. Number format used (comma decimal, space thousands separator, etc.)
+5. Where totals are located (bottom of table, separate section, etc.)
+6. Any fields that might be easily confused or misread
+
+Write the instructions as concise, actionable notes that will be injected into an AI extraction prompt. Use short bullet points. Keep it under 500 characters. Do NOT include generic advice — only supplier-specific observations from this invoice layout.`,
+  });
+
+  const completion = await openai.chat.completions.create({
+    model,
+    messages: [
+      { role: 'system', content: 'You are an invoice analysis assistant. Generate concise extraction instructions based on the invoice PDF layout. Output ONLY the instructions text, no preamble.' },
+      { role: 'user', content: userContentParts },
+    ],
+    temperature: 0,
+    max_tokens: 300,
+  });
+
+  return (completion.choices[0].message.content || '').trim();
+}
+
+module.exports = { extract, generateExtractionInstructions };

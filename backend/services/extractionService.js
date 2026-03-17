@@ -71,6 +71,115 @@ function tryUnconcatPrice(qty, unitPrice) {
   return candidates;
 }
 
+/**
+ * Verify and correct extracted line values against raw PDF text.
+ * PDF text is ground truth — if we find the product code in the text,
+ * we can extract nearby numbers and verify qty/unitPrice/net.
+ */
+function verifyLinesFromPdfText(extracted, pdfText) {
+  if (!pdfText || !extracted.lines || extracted.lines.length === 0) return [];
+  const corrections = [];
+
+  // Split PDF text into lines and normalize
+  const textLines = pdfText.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
+
+  for (let i = 0; i < extracted.lines.length; i++) {
+    const line = extracted.lines[i];
+    const net = line.net != null ? Number(line.net) : null;
+    const qty = line.qty != null ? Number(line.qty) : null;
+    const unitPrice = line.unitPrice != null ? Number(line.unitPrice) : null;
+    if (net == null || net === 0) continue;
+
+    // Find this line in PDF text by product code or description
+    const searchTerms = [];
+    if (line.productCode && line.productCode.length >= 3) searchTerms.push(line.productCode);
+    if (line.description && line.description.length >= 5) {
+      // Use first significant word of description (safest for regex)
+      const words = line.description.split(/\s+/).filter(w => w.length >= 3);
+      if (words.length > 0) searchTerms.push(words[0]);
+    }
+
+    let matchedTextLine = null;
+    for (const term of searchTerms) {
+      try {
+        const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(escaped, 'i');
+        for (const tl of textLines) {
+          if (regex.test(tl)) {
+            matchedTextLine = tl;
+            break;
+          }
+        }
+      } catch { /* skip bad regex */ }
+      if (matchedTextLine) break;
+    }
+
+    if (!matchedTextLine) continue;
+
+    // Extract all numbers from the matched text line
+    // Handles European format: "25" "8,47" "211,75" and also "8.47" "211.75"
+    const numberMatches = [];
+    const numRegex = /(\d[\d\s]*(?:[.,]\d+)?)/g;
+    let m;
+    while ((m = numRegex.exec(matchedTextLine)) !== null) {
+      const raw = m[1].replace(/\s/g, ''); // remove space thousands separators
+      const normalized = raw.replace(',', '.'); // European decimal comma → dot
+      const val = parseFloat(normalized);
+      if (!isNaN(val) && val > 0) {
+        numberMatches.push(val);
+      }
+    }
+
+    if (numberMatches.length < 2) continue;
+
+    // Check if our extracted qty and unitPrice are present in PDF text numbers
+    const qtyInText = qty != null && numberMatches.some(n => approxEqual(n, qty));
+    const priceInText = unitPrice != null && numberMatches.some(n => approxEqual(n, unitPrice));
+
+    // If both are found in the text, values are likely correct
+    if (qtyInText && priceInText) continue;
+
+    // Try to find the correct qty/unitPrice pair from PDF text numbers
+    // Look for two numbers where a × b ≈ net
+    let bestFix = null;
+
+    for (let a = 0; a < numberMatches.length; a++) {
+      for (let b = a + 1; b < numberMatches.length; b++) {
+        const n1 = numberMatches[a];
+        const n2 = numberMatches[b];
+
+        // Skip if either number IS the net (we want qty and unitPrice, not net itself)
+        if (approxEqual(n1, net) || approxEqual(n2, net)) continue;
+
+        // Try both orderings: (n1=qty, n2=price) and (n2=qty, n1=price)
+        if (approxEqual(n1 * n2, net)) {
+          // Prefer integer as qty
+          if (Number.isInteger(n1)) {
+            bestFix = { qty: n1, unitPrice: n2 };
+          } else if (Number.isInteger(n2)) {
+            bestFix = { qty: n2, unitPrice: n1 };
+          } else {
+            // Both have decimals — pick the smaller as unitPrice
+            bestFix = n1 > n2 ? { qty: n1, unitPrice: n2 } : { qty: n2, unitPrice: n1 };
+          }
+          break;
+        }
+      }
+      if (bestFix) break;
+    }
+
+    if (bestFix && (!approxEqual(bestFix.qty, qty) || !approxEqual(bestFix.unitPrice, unitPrice))) {
+      corrections.push(
+        `Line ${i + 1}: PDF text fix: qty ${qty} → ${bestFix.qty}, unitPrice ${unitPrice} → ${bestFix.unitPrice} (${bestFix.qty} × ${bestFix.unitPrice} ≈ net ${net})`
+      );
+      line.qty = bestFix.qty;
+      line.unitPrice = bestFix.unitPrice;
+    }
+  }
+
+  return corrections;
+}
+
 function correctExtractedMath(extracted) {
   const corrections = [];
   const lines = extracted.lines || [];
@@ -86,9 +195,21 @@ function correctExtractedMath(extracted) {
       if (!approxEqual(expected, net)) {
         let fixed = false;
 
+        // 0) Check if unitPrice was read from the net column (unitPrice ≈ net)
+        //    E.g. qty=3, unitPrice=30.66, net=30.66 → should be qty=2, unitPrice=15.33, net=30.66
+        //    or qty=2, unitPrice=30.66, net=30.66 → unitPrice should be net/qty = 15.33
+        if (approxEqual(unitPrice, net) && qty > 0) {
+          const correctUnitPrice = Math.round((net / qty) * 10000) / 10000;
+          if (correctUnitPrice > 0 && !approxEqual(correctUnitPrice, unitPrice)) {
+            corrections.push(`Line ${i + 1}: unitPrice was same as net (column confusion): unitPrice ${unitPrice} → ${correctUnitPrice} (net ${net} / qty ${qty})`);
+            line.unitPrice = correctUnitPrice;
+            fixed = true;
+          }
+        }
+
         // 1) Try column un-concatenation: move digits from unitPrice back to qty
         //    E.g. qty=2, unitPrice=58.47, net=211.75 → qty=25, unitPrice=8.47 (25×8.47=211.75)
-        if (qty > 0) {
+        if (!fixed && qty > 0) {
           const uncatCandidates = tryUnconcatPrice(qty, unitPrice);
           for (const c of uncatCandidates) {
             if (approxEqual(c.qty * c.unitPrice, net)) {
@@ -174,6 +295,10 @@ function correctExtractedMath(extracted) {
         const unitPrice = line.unitPrice != null ? Number(line.unitPrice) : null;
 
         if (qty == null || unitPrice == null || qty <= 0) continue;
+
+        // Skip lines that are already internally consistent — don't break correct lines
+        const net = line.net != null ? Number(line.net) : null;
+        if (net != null && approxEqual(qty * unitPrice, net)) continue;
 
         const uncatCandidates = tryUnconcatPrice(qty, unitPrice);
         for (const c of uncatCandidates) {
@@ -423,9 +548,21 @@ async function processInvoice(invoiceId, pdfBuffer, filename, session) {
 
         finalModel = primaryModel;
 
-        // Step 2b: Math auto-correction
+        // Step 2b: PDF text verification — fix qty/unitPrice from ground truth text
+        if (pdfText) {
+          const textFixes = verifyLinesFromPdfText(extracted, pdfText);
+          if (textFixes.length > 0) {
+            totalMathCorrections += textFixes.length;
+            await addLog(invoiceId, 'pdf_text_verify', 'warn',
+              `Applied ${textFixes.length} PDF text verification fix(es)`,
+              { fixes: textFixes }
+            );
+          }
+        }
+
+        // Step 2c: Math auto-correction
         const corrections = correctExtractedMath(extracted);
-        totalMathCorrections = corrections.length;
+        totalMathCorrections += corrections.length;
         if (corrections.length > 0) {
           await addLog(invoiceId, 'math_correction', 'warn',
             `Applied ${corrections.length} math correction(s)`,
@@ -456,7 +593,8 @@ async function processInvoice(invoiceId, pdfBuffer, filename, session) {
               supplierContext,
             });
 
-            // Apply math correction to retry result too
+            // Apply PDF text verification + math correction to retry result too
+            if (pdfText) verifyLinesFromPdfText(retryResult, pdfText);
             const retryCorrections = correctExtractedMath(retryResult);
             const retryValidation = validate(retryResult);
 
@@ -554,11 +692,13 @@ async function processInvoice(invoiceId, pdfBuffer, filename, session) {
     );
 
     // Step 5b: Link to existing supplier if found (no auto-create during extraction)
+    let linkedSupplier = earlyMatchedSupplier || null;
     try {
       const invoiceRow = await query('SELECT tenant_id FROM invoices WHERE id = ? LIMIT 1', [invoiceId]);
       if (invoiceRow[0]) {
         const supplier = await findSupplier(invoiceRow[0].tenant_id, extracted);
         if (supplier) {
+          linkedSupplier = supplier;
           await query('UPDATE invoices SET supplier_id = ? WHERE id = ?', [supplier.id, invoiceId]);
           await addLog(invoiceId, 'supplier_link', 'info',
             `Linked to existing supplier: ${supplier.name}`,
@@ -574,7 +714,32 @@ async function processInvoice(invoiceId, pdfBuffer, filename, session) {
       await addLog(invoiceId, 'supplier_link', 'warn', `Supplier lookup failed: ${supplierErr.message}`, null);
     }
 
-    // Step 5c: Lookup Futursoft supplier number (if session available)
+    // Step 5c: Auto-generate extraction instructions if supplier has none
+    // Fire-and-forget — runs in background, does not block the pipeline
+    try {
+      const linkedSupplierId = linkedSupplier?.id;
+      if (linkedSupplierId && !supplierContext?.instructions && pdfBuffer && process.env.OPENAI_API_KEY) {
+        // Check if supplier still has no instructions (may have been set manually)
+        const supRow = await query('SELECT extraction_instructions FROM suppliers WHERE id = ? LIMIT 1', [linkedSupplierId]);
+        if (supRow[0] && !supRow[0].extraction_instructions) {
+          addLog(invoiceId, 'auto_instructions', 'info', `Generating extraction instructions for supplier "${linkedSupplier.name}"`, null);
+          openaiExtractor.generateExtractionInstructions(pdfBuffer, filename, extracted)
+            .then(async (instructions) => {
+              if (instructions && instructions.length > 10) {
+                await query('UPDATE suppliers SET extraction_instructions = ? WHERE id = ? AND (extraction_instructions IS NULL OR extraction_instructions = "")', [instructions, linkedSupplierId]);
+                await addLog(invoiceId, 'auto_instructions', 'info', `Auto-generated extraction instructions (${instructions.length} chars)`, { instructions });
+              }
+            })
+            .catch(async (err) => {
+              await addLog(invoiceId, 'auto_instructions', 'warn', `Failed to auto-generate instructions: ${err.message}`, null).catch(() => {});
+            });
+        }
+      }
+    } catch (autoInstrErr) {
+      // Non-fatal
+    }
+
+    // Step 5d: Lookup Futursoft supplier number (if session available)
     if (session?.fsAccessToken) {
       try {
         await lookupFutursoftSupplierNr(invoiceId, session);
