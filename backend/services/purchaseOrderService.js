@@ -119,7 +119,7 @@ async function createOrderProposal(invoiceId, session, orderTypeCode) {
 
   const typeCode = parseInt(orderTypeCode, 10) || 1;
 
-  const payload = {
+  const payload = [{
     supplierNr,
     orderTypeCode: typeCode,
     status: 'PROPOSAL',
@@ -134,10 +134,11 @@ async function createOrderProposal(invoiceId, session, orderTypeCode) {
       supplierNr,
       rowOrderNr: idx + 1,
     })),
-  };
+  }];
 
   const client = await createFromSession(session);
-  const result = await client.createProposal(payload);
+  const resultArray = await client.createProposal(payload);
+  const result = Array.isArray(resultArray) ? resultArray[0] : resultArray;
 
   console.log(`[proposal] Created order proposal for invoice ${invoiceId}: PO# ${result?.purchaseOrderNr || 'unknown'}`);
 
