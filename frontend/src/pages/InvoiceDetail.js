@@ -437,31 +437,72 @@ function InvoiceDetail() {
         </div>
       </nav>
 
+      {/* ── Sticky Workflow Bar ── */}
+      <div style={{
+        position: 'sticky',
+        top: 0,
+        zIndex: 200,
+        background: '#fff',
+        borderBottom: '1px solid #e0e0e0',
+        padding: '0.5rem 1rem',
+        display: 'flex',
+        gap: '0.5rem',
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        boxShadow: '0 2px 4px rgba(0,0,0,0.06)',
+      }}>
+        <span className={`status-badge status-${invoice.status}`} style={{ marginRight: '0.25rem' }}>
+          {STATUS_LABEL[invoice.status] || invoice.status}
+        </span>
+        {['needs_review', 'ready', 'approved', 'pending_approval'].includes(invoice.status) && (
+          <Link to={`/invoices/${id}/matching`} className="btn btn-primary" style={{ fontSize: '0.82rem', padding: '0.3rem 0.7rem' }}>
+            Row Matching
+          </Link>
+        )}
+        {invoice.workflowConfig?.orderProposal && (
+          <Link to={`/invoices/${id}/proposal`} className="btn" style={{ fontSize: '0.82rem', padding: '0.3rem 0.7rem', backgroundColor: '#2980b9', color: 'white' }}>
+            Order Proposal
+          </Link>
+        )}
+        {invoice.workflowConfig?.orderConfirmation && (
+          <button className="btn" style={{ fontSize: '0.82rem', padding: '0.3rem 0.7rem', backgroundColor: '#f39c12', color: 'white' }} disabled>
+            Order Confirmation
+          </button>
+        )}
+        {invoice.workflowConfig?.order && (
+          <button className="btn" style={{ fontSize: '0.82rem', padding: '0.3rem 0.7rem', backgroundColor: '#e67e22', color: 'white' }} disabled>
+            Order
+          </button>
+        )}
+        {invoice.workflowConfig?.receiving && invoice.purchaseOrderNr && (
+          <Link to={`/invoices/${id}/receiving`} className="btn" style={{ fontSize: '0.82rem', padding: '0.3rem 0.7rem', backgroundColor: '#27ae60', color: 'white' }}>
+            Receiving
+          </Link>
+        )}
+        {invoice.purchaseOrderNr && (
+          <Link to={`/invoices/${id}/consolidation`} className="btn" style={{ fontSize: '0.82rem', padding: '0.3rem 0.7rem', backgroundColor: '#8e44ad', color: 'white' }}>
+            Consolidation
+          </Link>
+        )}
+        <div style={{ flex: 1 }} />
+        {canEdit && (
+          <span style={{ fontSize: '0.75rem', color: '#bbb' }}>Double-click to edit</span>
+        )}
+        <button
+          className="btn"
+          onClick={() => setShowPdf(!showPdf)}
+          style={{ fontSize: '0.82rem', padding: '0.3rem 0.7rem', backgroundColor: showPdf ? '#2c3e50' : '#ecf0f1', color: showPdf ? 'white' : '#333' }}
+        >
+          {showPdf ? 'Hide PDF' : 'Show PDF'}
+        </button>
+      </div>
+
       <div ref={containerRef} style={{ display: 'flex', padding: '0 1rem', maxWidth: showPdf ? '100%' : '1100px', margin: '0 auto' }}>
 
         {/* Left: Invoice data */}
         <div style={{ width: showPdf ? `${leftPanelWidth}%` : '100%', flexShrink: 0, minWidth: 0, paddingRight: showPdf ? '0.5rem' : 0 }}>
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', marginTop: '1rem' }}>
-            <h2>Invoice Detail</h2>
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              {canEdit && (
-                <span style={{ fontSize: '0.8rem', color: '#999' }} title="Double-click any field to edit">
-                  Double-click to edit
-                </span>
-              )}
-              <button
-                className="btn"
-                onClick={() => setShowPdf(!showPdf)}
-                style={{ backgroundColor: showPdf ? '#2c3e50' : '#ecf0f1', color: showPdf ? 'white' : '#333', fontSize: '0.85rem' }}
-              >
-                {showPdf ? 'Hide PDF' : 'Show PDF'}
-              </button>
-              <span className={`status-badge status-${invoice.status}`}>
-                {STATUS_LABEL[invoice.status] || invoice.status}
-              </span>
-            </div>
-          </div>
+          <h2 style={{ marginTop: '1rem', marginBottom: '0.75rem' }}>Invoice Detail</h2>
 
           {error && <div className="error" style={{ marginBottom: '1rem' }}>{error}</div>}
 
@@ -653,11 +694,12 @@ function InvoiceDetail() {
               </div>
 
               {/* ── Invoice Lines ── */}
-              <div className="card" style={{ overflowX: 'auto' }}>
+              <div className="card">
                 <h3>Invoice Lines</h3>
                 {viewLines.length > 0 ? (
+                  <div style={{ maxHeight: '45vh', overflowY: 'auto', overflowX: 'auto' }}>
                   <table>
-                    <thead>
+                    <thead style={{ position: 'sticky', top: 0, background: '#fff', zIndex: 1 }}>
                       <tr>
                         <th>#</th>
                         <th>Product Code</th>
@@ -764,6 +806,7 @@ function InvoiceDetail() {
                       </tfoot>
                     )}
                   </table>
+                  </div>
                 ) : (
                   <p style={{ color: '#999' }}>No invoice lines.</p>
                 )}
@@ -777,31 +820,6 @@ function InvoiceDetail() {
                   </button>
                 )}
               </div>
-
-              {/* ── Workflow Actions ── */}
-              {['needs_review', 'ready', 'approved'].includes(invoice.status) && (
-                <div className="card">
-                  <h3>Workflow Actions</h3>
-                  <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                    <Link to={`/invoices/${id}/matching`} className="btn btn-primary">Row Matching</Link>
-                    {invoice.workflowConfig?.orderProposal && (
-                      <Link to={`/invoices/${id}/proposal`} className="btn" style={{ backgroundColor: '#2980b9', color: 'white' }}>Order Proposal</Link>
-                    )}
-                    {invoice.workflowConfig?.orderConfirmation && (
-                      <button className="btn" style={{ backgroundColor: '#f39c12', color: 'white' }} disabled>Order Confirmation</button>
-                    )}
-                    {invoice.workflowConfig?.order && (
-                      <button className="btn" style={{ backgroundColor: '#e67e22', color: 'white' }} disabled>Order</button>
-                    )}
-                    {invoice.workflowConfig?.receiving && invoice.purchaseOrderNr && (
-                      <Link to={`/invoices/${id}/receiving`} className="btn" style={{ backgroundColor: '#27ae60', color: 'white' }}>Receiving Preview</Link>
-                    )}
-                    {invoice.purchaseOrderNr && (
-                      <Link to={`/invoices/${id}/consolidation`} className="btn" style={{ backgroundColor: '#8e44ad', color: 'white' }}>Cross-Order Consolidation</Link>
-                    )}
-                  </div>
-                </div>
-              )}
 
               {/* ── Approval Actions ── */}
               <ApprovalActions invoice={invoice} user={user} onActionComplete={fetchInvoice} />

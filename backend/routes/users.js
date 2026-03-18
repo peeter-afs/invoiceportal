@@ -4,6 +4,23 @@ const crypto = require('crypto');
 const { query } = require('../db');
 const { auth, adminAuth } = require('../middleware/auth');
 
+// Get approvers for tenant (any authenticated user — used for approver selection dropdowns)
+router.get('/approvers', auth, async (req, res) => {
+  try {
+    const approvers = await query(
+      `SELECT pu.id, pu.display_name AS displayName
+       FROM user_tenants ut
+       JOIN portal_users pu ON pu.id = ut.user_id
+       WHERE ut.tenant_id = ? AND ut.role IN ('approver', 'tenant_admin') AND ut.status = 'active'
+       ORDER BY pu.display_name ASC`,
+      [req.tenantId]
+    );
+    res.json(approvers);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get all users for tenant (admin only)
 router.get('/', adminAuth, async (req, res) => {
   try {

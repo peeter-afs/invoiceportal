@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
-import { supplierAPI, invoiceAPI } from '../services/api';
+import { supplierAPI, invoiceAPI, userAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import './Dashboard.css';
 
@@ -14,7 +14,9 @@ function SupplierDetail() {
   const [supplier, setSupplier] = useState({
     name: '', vatNumber: '', regNumber: '', address: '',
     bankAccount: '', futursoftSupplierNr: '', extractionInstructions: '',
+    defaultApproverId: '',
   });
+  const [approvers, setApprovers] = useState([]);
   const [aliases, setAliases] = useState([]);
   const [newAlias, setNewAlias] = useState('');
   const [loading, setLoading] = useState(!isNew);
@@ -41,6 +43,7 @@ function SupplierDetail() {
         bankAccount: data.bankAccount || '',
         futursoftSupplierNr: data.futursoftSupplierNr || '',
         extractionInstructions: data.extractionInstructions || '',
+        defaultApproverId: data.defaultApproverId || '',
       });
       setAliases(data.aliases || []);
     } catch (err) {
@@ -72,6 +75,9 @@ function SupplierDetail() {
       fetchSamples();
       fetchLinkedInvoices();
     }
+    userAPI.getApprovers()
+      .then((res) => setApprovers(res.data || []))
+      .catch(() => { /* non-critical */ });
   }, [isNew, fetchSupplier, fetchSamples, fetchLinkedInvoices]);
 
   const handleSave = async (e) => {
@@ -223,6 +229,20 @@ function SupplierDetail() {
                   disabled={!isAdmin}
                   style={{ width: '100%', padding: '0.5rem', marginTop: '0.25rem' }}
                 />
+              </div>
+              <div>
+                <label><strong>Default Approver</strong></label>
+                <select
+                  value={supplier.defaultApproverId || ''}
+                  onChange={(e) => setSupplier({ ...supplier, defaultApproverId: e.target.value || null })}
+                  disabled={!isAdmin}
+                  style={{ width: '100%', padding: '0.5rem', marginTop: '0.25rem', borderRadius: '4px', border: '1px solid #ccc' }}
+                >
+                  <option value="">— use tenant default —</option>
+                  {approvers.map((a) => (
+                    <option key={a.id} value={a.id}>{a.displayName}</option>
+                  ))}
+                </select>
               </div>
               <div style={{ gridColumn: '1 / -1' }}>
                 <label><strong>Address</strong></label>

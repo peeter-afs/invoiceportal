@@ -1,24 +1,39 @@
-import React, { useState } from 'react';
-import { invoiceAPI } from '../services/api';
+import React, { useState, useEffect } from 'react';
+import { invoiceAPI, userAPI } from '../services/api';
 
 function ApprovalActions({ invoice, user, onActionComplete }) {
   const [comment, setComment] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [approvers, setApprovers] = useState([]);
+  const [selectedApproverId, setSelectedApproverId] = useState('');
 
-  if (!invoice || !user) return null;
-
-  const role = user.role;
-  const status = invoice.status;
+  const role = user?.role;
+  const status = invoice?.status;
 
   const canSubmit =
     (role === 'reviewer' || role === 'tenant_admin') &&
     ['needs_review', 'ready', 'rejected'].includes(status);
 
+  // Approvers can directly approve from needs_review/ready (skip pending_approval step)
   const canApproveReject =
     (role === 'approver' || role === 'tenant_admin') &&
-    status === 'pending_approval';
+    ['pending_approval', 'needs_review', 'ready'].includes(status);
 
+  // Load approvers list when submit is possible
+  useEffect(() => {
+    if (!canSubmit) return;
+    userAPI.getApprovers()
+      .then((res) => {
+        setApprovers(res.data || []);
+        // Pre-fill with default approver from workflowConfig cascade (supplier > tenant)
+        const defaultId = invoice?.workflowConfig?.defaultApproverId;
+        if (defaultId) setSelectedApproverId(defaultId);
+      })
+      .catch(() => { /* non-critical */ });
+  }, [canSubmit, invoice?.workflowConfig?.defaultApproverId]);
+
+  if (!invoice || !user) return null;
   if (!canSubmit && !canApproveReject) return null;
 
   const doAction = async (action) => {
@@ -29,7 +44,7 @@ function ApprovalActions({ invoice, user, onActionComplete }) {
     setLoading(true);
     setError('');
     try {
-      if (action === 'submit') await invoiceAPI.submit(invoice._id);
+      if (action === 'submit') await invoiceAPI.submit(invoice._id, selectedApproverId || undefined);
       else if (action === 'approve') await invoiceAPI.approve(invoice._id, comment);
       else if (action === 'reject') await invoiceAPI.reject(invoice._id, comment);
       setComment('');
@@ -44,6 +59,24 @@ function ApprovalActions({ invoice, user, onActionComplete }) {
   return (
     <div className="card">
       <h3>Approval Actions</h3>
+
+      {canSubmit && approvers.length > 0 && (
+        <div className="form-group" style={{ marginBottom: '0.75rem' }}>
+          <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 500 }}>
+            Assign to approver
+          </label>
+          <select
+            value={selectedApproverId}
+            onChange={(e) => setSelectedApproverId(e.target.value)}
+            style={{ padding: '0.4rem 0.5rem', borderRadius: '4px', border: '1px solid #ddd', minWidth: '200px' }}
+          >
+            <option value="">— select approver —</option>
+            {approvers.map((a) => (
+              <option key={a.id} value={a.id}>{a.displayName}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {canApproveReject && (
         <div className="form-group">

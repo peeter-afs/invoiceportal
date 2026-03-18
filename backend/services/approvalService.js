@@ -5,7 +5,7 @@ const { resolveSupplier } = require('./supplierService');
 // Valid transitions
 const TRANSITIONS = {
   submit:  { from: ['needs_review', 'ready', 'rejected'], to: 'pending_approval' },
-  approve: { from: ['pending_approval'], to: 'approved' },
+  approve: { from: ['pending_approval', 'needs_review', 'ready'], to: 'approved' },
   reject:  { from: ['pending_approval'], to: 'rejected' },
 };
 
@@ -25,7 +25,7 @@ async function recordApprovalAction(invoiceId, action, userId, role, comment) {
   );
 }
 
-async function submitForApproval(invoiceId, tenantId, userId, role) {
+async function submitForApproval(invoiceId, tenantId, userId, role, assignedApproverId) {
   const invoice = await getInvoice(invoiceId, tenantId);
   if (!invoice) throw Object.assign(new Error('Invoice not found'), { status: 404 });
 
@@ -37,10 +37,17 @@ async function submitForApproval(invoiceId, tenantId, userId, role) {
     );
   }
 
-  await query(
-    `UPDATE invoices SET status = 'pending_approval', approval_status = 'pending' WHERE id = ? AND tenant_id = ?`,
-    [invoiceId, tenantId]
-  );
+  if (assignedApproverId) {
+    await query(
+      `UPDATE invoices SET status = 'pending_approval', approval_status = 'pending', assigned_approver_id = ? WHERE id = ? AND tenant_id = ?`,
+      [assignedApproverId, invoiceId, tenantId]
+    );
+  } else {
+    await query(
+      `UPDATE invoices SET status = 'pending_approval', approval_status = 'pending' WHERE id = ? AND tenant_id = ?`,
+      [invoiceId, tenantId]
+    );
+  }
   await recordApprovalAction(invoiceId, 'submit', userId, role, null);
 }
 
@@ -48,7 +55,8 @@ async function approve(invoiceId, tenantId, userId, role, comment) {
   const invoice = await getInvoice(invoiceId, tenantId);
   if (!invoice) throw Object.assign(new Error('Invoice not found'), { status: 404 });
 
-  if (invoice.status !== 'pending_approval') {
+  const approveTransition = TRANSITIONS.approve;
+  if (!approveTransition.from.includes(invoice.status)) {
     throw Object.assign(
       new Error(`Cannot approve invoice with status '${invoice.status}'`),
       { status: 400 }

@@ -57,6 +57,8 @@ function normalizeInvoice(row, lines = []) {
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    assignedApproverId: row.assigned_approver_id || null,
+    assignedApproverName: row.assigned_approver_name || null,
     lines: lines.map((l) => ({
       id: l.id,
       rowNo: l.row_no,
@@ -82,7 +84,9 @@ const INVOICE_COLUMNS = `i.id, i.tenant_id, i.status, i.source_type, i.supplier_
   i.requires_approval, i.approval_status, i.original_filename,
   i.error_message, i.extraction_model, i.extraction_retried, i.math_corrections, i.extraction_duration_ms,
   i.created_by, i.created_at, i.updated_at,
-  s.futursoft_supplier_nr AS supplier_futursoft_nr`;
+  i.assigned_approver_id,
+  s.futursoft_supplier_nr AS supplier_futursoft_nr,
+  pu_approver.display_name AS assigned_approver_name`;
 
 async function fetchInvoiceLines(invoiceIds) {
   if (!invoiceIds || invoiceIds.length === 0) return [];
@@ -104,6 +108,7 @@ router.get('/', auth, async (req, res) => {
       `SELECT ${INVOICE_COLUMNS}
        FROM invoices i
        LEFT JOIN suppliers s ON s.id = i.supplier_id
+       LEFT JOIN portal_users pu_approver ON pu_approver.id = i.assigned_approver_id
        WHERE i.tenant_id = ?
        ORDER BY i.created_at DESC`,
       [req.tenantId]
@@ -128,6 +133,7 @@ router.get('/:id', auth, async (req, res) => {
       `SELECT ${INVOICE_COLUMNS}
        FROM invoices i
        LEFT JOIN suppliers s ON s.id = i.supplier_id
+       LEFT JOIN portal_users pu_approver ON pu_approver.id = i.assigned_approver_id
        WHERE i.id = ? AND i.tenant_id = ?
        LIMIT 1`,
       [req.params.id, req.tenantId]
@@ -146,12 +152,26 @@ router.get('/:id', auth, async (req, res) => {
       ),
       getTenantSettings(req.tenantId),
     ]);
+
+    // Fetch supplier's default_approver_id if linked (for cascade: supplier > tenant)
+    let supplierDefaultApproverId = null;
+    if (invoice.supplier_id) {
+      const supRows = await query(
+        'SELECT default_approver_id FROM suppliers WHERE id = ? LIMIT 1',
+        [invoice.supplier_id]
+      );
+      supplierDefaultApproverId = supRows[0]?.default_approver_id || null;
+    }
+
     const result = normalizeInvoice(invoice, lines);
     result.workflowConfig = {
       orderProposal: !!(settings && settings.wf_order_proposal_enabled),
       orderConfirmation: !!(settings && settings.wf_order_confirmation_enabled),
       order: !!(settings && settings.wf_order_enabled),
       receiving: !!(settings && settings.wf_receiving_enabled),
+      requireApprovalBeforeOrder: !!(settings && settings.wf_require_approval_before_order),
+      autoApproveOnOrder: !!(settings && settings.wf_auto_approve_on_order),
+      defaultApproverId: supplierDefaultApproverId || (settings && settings.default_approver_id) || null,
     };
     res.json(result);
   } catch (error) {
@@ -231,7 +251,8 @@ router.post('/', auth, async (req, res) => {
       await conn.commit();
 
       const created = await query(
-        `SELECT ${INVOICE_COLUMNS} FROM invoices i LEFT JOIN suppliers s ON s.id = i.supplier_id WHERE i.id = ? LIMIT 1`,
+        `SELECT ${INVOICE_COLUMNS} FROM invoices i LEFT JOIN suppliers s ON s.id = i.supplier_id
+       LEFT JOIN portal_users pu_approver ON pu_approver.id = i.assigned_approver_id WHERE i.id = ? LIMIT 1`,
         [invoiceId]
       );
       const createdLines = await query(
@@ -339,7 +360,8 @@ router.put('/:id', auth, async (req, res) => {
       await conn.commit();
 
       const updated = await query(
-        `SELECT ${INVOICE_COLUMNS} FROM invoices i LEFT JOIN suppliers s ON s.id = i.supplier_id WHERE i.id = ? LIMIT 1`,
+        `SELECT ${INVOICE_COLUMNS} FROM invoices i LEFT JOIN suppliers s ON s.id = i.supplier_id
+       LEFT JOIN portal_users pu_approver ON pu_approver.id = i.assigned_approver_id WHERE i.id = ? LIMIT 1`,
         [invoiceId]
       );
       const updatedLines = await query(
@@ -437,7 +459,8 @@ router.get('/:id/file', auth, async (req, res) => {
 // Submit invoice for approval (reviewer or admin)
 router.post('/:id/submit', auth, requireRole('reviewer', 'tenant_admin'), async (req, res) => {
   try {
-    await submitForApproval(req.params.id, req.tenantId, req.userId, req.user.role);
+    const { assignedApproverId } = req.body;
+    await submitForApproval(req.params.id, req.tenantId, req.userId, req.user.role, assignedApproverId || null);
     res.json({ message: 'Invoice submitted for approval' });
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
@@ -521,6 +544,33 @@ router.put('/:id/lines/:lineId/match', auth, async (req, res) => {
 router.post('/:id/proposal', auth, async (req, res) => {
   try {
     const { orderTypeCode } = req.body;
+    const settings = await getTenantSettings(req.tenantId);
+
+    // Fetch current invoice status
+    const invRows = await query(
+      'SELECT status FROM invoices WHERE id = ? AND tenant_id = ? LIMIT 1',
+      [req.params.id, req.tenantId]
+    );
+    if (!invRows[0]) return res.status(404).json({ error: 'Invoice not found' });
+    const invoiceStatus = invRows[0].status;
+
+    // If require approval before order: block unless already approved
+    if (settings && settings.wf_require_approval_before_order && invoiceStatus !== 'approved') {
+      return res.status(409).json({ error: 'Invoice must be approved before creating an order' });
+    }
+
+    // Auto-approve if enabled and user is approver/admin and invoice not yet approved
+    if (
+      settings && settings.wf_auto_approve_on_order &&
+      ['approver', 'tenant_admin'].includes(req.user.role) &&
+      ['needs_review', 'ready', 'pending_approval'].includes(invoiceStatus)
+    ) {
+      await approve(req.params.id, req.tenantId, req.userId, req.user.role, 'Auto-approved on order creation');
+      lookupFutursoftSupplierNr(req.params.id, req.session).catch((err) => {
+        console.error(`[proposal] FS supplier lookup failed: ${err.message}`);
+      });
+    }
+
     const result = await createOrderProposal(req.params.id, req.session, orderTypeCode);
     res.status(201).json(result);
   } catch (err) {

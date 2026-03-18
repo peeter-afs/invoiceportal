@@ -142,6 +142,7 @@ async function updateSupplier(tenantId, supplierId, data) {
     ['bankAccount', 'bank_account'],
     ['futursoftSupplierNr', 'futursoft_supplier_nr'],
     ['extractionInstructions', 'extraction_instructions'],
+    ['defaultApproverId', 'default_approver_id'],
   ];
 
   for (const [bodyKey, col] of updatable) {

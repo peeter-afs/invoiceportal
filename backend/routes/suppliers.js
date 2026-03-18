@@ -231,6 +231,7 @@ function normalizeSupplier(row) {
     bankAccount: row.bank_account,
     futursoftSupplierNr: row.futursoft_supplier_nr,
     extractionInstructions: row.extraction_instructions || '',
+    defaultApproverId: row.default_approver_id || null,
     aliasCount: row.alias_count != null ? Number(row.alias_count) : undefined,
     aliases: row.aliases || undefined,
     createdAt: row.created_at,

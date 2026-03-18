@@ -48,7 +48,7 @@ export const invoiceAPI = {
   getFileUrl: (id) => `${API_URL}/invoices/${id}/file`,
   getFile: (id) => api.get(`/invoices/${id}/file`, { responseType: 'blob' }),
   // Approval
-  submit: (id) => api.post(`/invoices/${id}/submit`),
+  submit: (id, assignedApproverId) => api.post(`/invoices/${id}/submit`, { assignedApproverId: assignedApproverId || undefined }),
   approve: (id, comment) => api.post(`/invoices/${id}/approve`, { comment }),
   reject: (id, comment) => api.post(`/invoices/${id}/reject`, { comment }),
   getApprovals: (id) => api.get(`/invoices/${id}/approvals`),
@@ -83,6 +83,7 @@ export const futursoftAPI = {
 export const userAPI = {
   updateProfile: (userData) => api.put('/users/profile', userData),
   getAll: () => api.get('/users'),
+  getApprovers: () => api.get('/users/approvers'),
   setRole: (userId, role) => api.put(`/users/${userId}/role`, { role }),
   setStatus: (userId, status) => api.put(`/users/${userId}/status`, { status }),
 };

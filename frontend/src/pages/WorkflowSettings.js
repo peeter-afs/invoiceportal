@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { settingsAPI } from '../services/api';
+import { settingsAPI, userAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import './Dashboard.css';
 
@@ -11,12 +11,16 @@ function WorkflowSettings() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [approvers, setApprovers] = useState([]);
 
   useEffect(() => {
     settingsAPI.get()
       .then((res) => setSettings(res.data))
       .catch((err) => setError(err.response?.data?.error || 'Failed to load settings'))
       .finally(() => setLoading(false));
+    userAPI.getApprovers()
+      .then((res) => setApprovers(res.data || []))
+      .catch(() => { /* non-critical */ });
   }, []);
 
   const handleToggle = (field) => {
@@ -97,6 +101,32 @@ function WorkflowSettings() {
                 <input type="checkbox" checked={settings.wfReceivingEnabled} onChange={() => handleToggle('wfReceivingEnabled')} />
                 Receiving
               </label>
+              <hr style={{ margin: '0.75rem 0', borderColor: '#eee' }} />
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem', cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!settings.wfAutoApproveOnOrder} onChange={() => handleToggle('wfAutoApproveOnOrder')} />
+                Auto-approve when order is created (approver role required)
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!settings.wfRequireApprovalBeforeOrder} onChange={() => handleToggle('wfRequireApprovalBeforeOrder')} />
+                Require approval before creating order
+              </label>
+            </div>
+
+            <div className="card">
+              <h3>Default Approver</h3>
+              <p style={{ color: '#666', marginBottom: '0.75rem', fontSize: '0.9em' }}>
+                Pre-selected approver when submitting invoices for approval. Can be overridden per supplier.
+              </p>
+              <select
+                value={settings.defaultApproverId || ''}
+                onChange={(e) => setSettings((prev) => ({ ...prev, defaultApproverId: e.target.value || null }))}
+                style={{ padding: '0.4rem 0.5rem', borderRadius: '4px', border: '1px solid #ddd', minWidth: '220px' }}
+              >
+                <option value="">— no default —</option>
+                {approvers.map((a) => (
+                  <option key={a.id} value={a.id}>{a.displayName}</option>
+                ))}
+              </select>
             </div>
 
             <button className="btn btn-primary" onClick={handleSave} disabled={saving} style={{ marginTop: '0.5rem' }}>
